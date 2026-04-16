@@ -1,4 +1,4 @@
-const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -75,8 +75,14 @@ function attachListeners(client) {
                 });
 
                 // Move member to their new channel
-                await member.voice.setChannel(newChannel);
-                
+                try {
+                    await member.voice.setChannel(newChannel);
+                } catch (moveError) {
+                    console.warn(`[Addon:VoiceChatSystem] User disconnected before move. Cleaning up...`);
+                    await newChannel.delete().catch(() => {});
+                    return;
+                }
+
                 // Save the channel ownership to database
                 data.activeChannels[newChannel.id] = { ownerId: member.id };
                 saveGuildData(guildId, data);
@@ -117,7 +123,12 @@ function attachListeners(client) {
 
         // Command: /vcsetup
         if (interaction.isChatInputCommand() && interaction.commandName === 'vcsetup') {
-            await interaction.deferReply({ ephemeral: true });
+            try {
+                await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            } catch (err) {
+                return; // Interaction expired or already handled
+            }
+
             const category = await interaction.guild.channels.create({ name: '🎤 Voice Channels', type: ChannelType.GuildCategory });
             const masterChannel = await interaction.guild.channels.create({ name: '➕ Join to Create', type: ChannelType.GuildVoice, parent: category.id });
             
@@ -129,26 +140,26 @@ function attachListeners(client) {
         // Control Panel Buttons
         if (interaction.isButton() && interaction.customId.startsWith('vc_')) {
             const channel = interaction.member?.voice?.channel;
-            if (!channel) return interaction.reply({ content: 'You must be in a voice channel to use these controls.', ephemeral: true });
+            if (!channel) return interaction.reply({ content: 'You must be in a voice channel to use these controls.', flags: MessageFlags.Ephemeral }).catch(() => {});
 
             const channelInfo = data.activeChannels[channel.id];
-            if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', ephemeral: true });
+            if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', flags: MessageFlags.Ephemeral }).catch(() => {});
 
             // Allow non-owners to claim an abandoned channel
             if (interaction.customId === 'vc_claim') {
-                if (channelInfo.ownerId === interaction.user.id) return interaction.reply({ content: 'You already own this channel.', ephemeral: true });
-                if (channel.members.has(channelInfo.ownerId)) return interaction.reply({ content: '❌ The current owner is still in the channel.', ephemeral: true });
+                if (channelInfo.ownerId === interaction.user.id) return interaction.reply({ content: 'You already own this channel.', flags: MessageFlags.Ephemeral }).catch(() => {});
+                if (channel.members.has(channelInfo.ownerId)) return interaction.reply({ content: '❌ The current owner is still in the channel.', flags: MessageFlags.Ephemeral }).catch(() => {});
                 data.activeChannels[channel.id].ownerId = interaction.user.id;
                 saveGuildData(guildId, data);
-                return interaction.reply({ content: '👑 You are now the new owner of this channel!', ephemeral: true });
+                return interaction.reply({ content: '👑 You are now the new owner of this channel!', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
 
             if (channelInfo.ownerId !== interaction.user.id && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '❌ Only the owner of this channel can use these controls.', ephemeral: true });
+                return interaction.reply({ content: '❌ Only the owner of this channel can use these controls.', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
 
             if (interaction.customId === 'vc_delete') {
-                await interaction.reply({ content: '🗑️ Disbanding channel...', ephemeral: true });
+                await interaction.reply({ content: '🗑️ Disbanding channel...', flags: MessageFlags.Ephemeral }).catch(() => {});
                 await channel.delete().catch(() => {});
                 delete data.activeChannels[channel.id];
                 saveGuildData(guildId, data);
@@ -157,42 +168,42 @@ function attachListeners(client) {
 
             if (interaction.customId === 'vc_lock') {
                 await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: false });
-                return interaction.reply({ content: '🔒 Channel Locked!', ephemeral: true });
+                return interaction.reply({ content: '🔒 Channel Locked!', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
             if (interaction.customId === 'vc_unlock') {
                 await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: null });
-                return interaction.reply({ content: '🔓 Channel Unlocked!', ephemeral: true });
+                return interaction.reply({ content: '🔓 Channel Unlocked!', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
             if (interaction.customId === 'vc_rename') {
                 const modal = new ModalBuilder().setCustomId('vc_modal_rename').setTitle('Rename Channel');
                 const input = new TextInputBuilder().setCustomId('new_name').setLabel('New Channel Name').setStyle(TextInputStyle.Short).setValue(channel.name).setMaxLength(30);
                 modal.addComponents(new ActionRowBuilder().addComponents(input));
-                return interaction.showModal(modal);
+                return interaction.showModal(modal).catch(() => {});
             }
             if (interaction.customId === 'vc_limit') {
                 const modal = new ModalBuilder().setCustomId('vc_modal_limit').setTitle('Set User Limit');
                 const input = new TextInputBuilder().setCustomId('user_limit').setLabel('Number (0 for unlimited)').setStyle(TextInputStyle.Short).setValue(String(channel.userLimit || 0));
                 modal.addComponents(new ActionRowBuilder().addComponents(input));
-                return interaction.showModal(modal);
+                return interaction.showModal(modal).catch(() => {});
             }
         }
 
         // Control Panel Modals
         if (interaction.isModalSubmit() && interaction.customId.startsWith('vc_modal_')) {
             const channel = interaction.member?.voice?.channel;
-            if (!channel) return interaction.reply({ content: 'An error occurred. Please try again.', ephemeral: true });
+            if (!channel) return interaction.reply({ content: 'An error occurred. Please try again.', flags: MessageFlags.Ephemeral }).catch(() => {});
             
             if (interaction.customId === 'vc_modal_rename') {
                 const newName = interaction.fields.getTextInputValue('new_name');
                 await channel.setName(newName).catch(console.error);
-                return interaction.reply({ content: `✏️ Channel renamed to **${newName}**!`, ephemeral: true });
+                return interaction.reply({ content: `✏️ Channel renamed to **${newName}**!`, flags: MessageFlags.Ephemeral }).catch(() => {});
             }
             if (interaction.customId === 'vc_modal_limit') {
                 const limitStr = interaction.fields.getTextInputValue('user_limit');
                 const limit = parseInt(limitStr);
-                if (isNaN(limit) || limit < 0 || limit > 99) return interaction.reply({ content: '❌ Please enter a valid number between 0 and 99.', ephemeral: true });
+                if (isNaN(limit) || limit < 0 || limit > 99) return interaction.reply({ content: '❌ Please enter a valid number between 0 and 99.', flags: MessageFlags.Ephemeral }).catch(() => {});
                 await channel.setUserLimit(limit).catch(console.error);
-                return interaction.reply({ content: `👥 Channel user limit set to **${limit === 0 ? 'Unlimited' : limit}**!`, ephemeral: true });
+                return interaction.reply({ content: `👥 Channel user limit set to **${limit === 0 ? 'Unlimited' : limit}**!`, flags: MessageFlags.Ephemeral }).catch(() => {});
             }
         }
     });
