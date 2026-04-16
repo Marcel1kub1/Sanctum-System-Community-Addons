@@ -7,7 +7,8 @@ let globalContext = null;
 
 // Manage per-guild configuration data locally within the addon's folder
 function getGuildDataPath(guildId) {
-    const dir = path.join(__dirname, 'data');
+    // Save data outside the addon folder so it survives Addon updates!
+    const dir = path.join(process.cwd(), 'addon_data', 'VoiceChatSystem');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return path.join(dir, `${guildId}.json`);
 }
@@ -132,8 +133,26 @@ function attachListeners(client) {
 
             const channelInfo = data.activeChannels[channel.id];
             if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', ephemeral: true });
+
+            // Allow non-owners to claim an abandoned channel
+            if (interaction.customId === 'vc_claim') {
+                if (channelInfo.ownerId === interaction.user.id) return interaction.reply({ content: 'You already own this channel.', ephemeral: true });
+                if (channel.members.has(channelInfo.ownerId)) return interaction.reply({ content: '❌ The current owner is still in the channel.', ephemeral: true });
+                data.activeChannels[channel.id].ownerId = interaction.user.id;
+                saveGuildData(guildId, data);
+                return interaction.reply({ content: '👑 You are now the new owner of this channel!', ephemeral: true });
+            }
+
             if (channelInfo.ownerId !== interaction.user.id && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: '❌ Only the owner of this channel can use these controls.', ephemeral: true });
+            }
+
+            if (interaction.customId === 'vc_delete') {
+                await interaction.reply({ content: '🗑️ Disbanding channel...', ephemeral: true });
+                await channel.delete().catch(() => {});
+                delete data.activeChannels[channel.id];
+                saveGuildData(guildId, data);
+                return;
             }
 
             if (interaction.customId === 'vc_lock') {
@@ -185,14 +204,19 @@ function sendControlPanel(channel, member, theme) {
         description: `Welcome, ${member}! Use the buttons below to manage your channel.`
     });
 
-    const row = new ActionRowBuilder().addComponents(
+    const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('vc_lock').setLabel('Lock').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId('vc_unlock').setLabel('Unlock').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('vc_rename').setLabel('Rename').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('vc_limit').setLabel('Limit Users').setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('vc_limit').setLabel('Limit').setStyle(ButtonStyle.Secondary)
     );
 
-    channel.send({ content: `${member}`, embeds: [embed], components: [row] }).catch(console.error);
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('vc_claim').setLabel('Claim Ownership').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('vc_delete').setLabel('Disband Channel').setStyle(ButtonStyle.Danger)
+    );
+
+    channel.send({ content: `${member}`, embeds: [embed], components: [row1, row2] }).catch(console.error);
 }
 
 module.exports = { initialize };
