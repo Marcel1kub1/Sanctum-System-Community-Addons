@@ -1,10 +1,9 @@
 const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { createThemedEmbed } = require('../src/theming');
-const { getGuildSettings } = require('../src/index');
 
 let listenersAttached = false;
+let globalContext = null;
 
 // Manage per-guild configuration data locally within the addon's folder
 function getGuildDataPath(guildId) {
@@ -25,8 +24,9 @@ function saveGuildData(guildId, data) {
     fs.writeFileSync(getGuildDataPath(guildId), JSON.stringify(data, null, 2));
 }
 
-function initialize(client, options) {
+function initialize(client, guildId, context) {
     console.log(`[Addon:VoiceChatSystem] Initializing...`);
+    globalContext = context;
 
     // Ensure event listeners are only attached once even if loaded multiple times
     if (!listenersAttached) {
@@ -69,8 +69,7 @@ function attachListeners(client) {
                     parent: category ? category.id : null,
                     permissionOverwrites: [
                         { id: newState.guild.id, allow: [PermissionFlagsBits.Connect] },
-                        { id: member.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers, PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Connect, PermissionFlagsBits.ManageChannels] }
+                        { id: member.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers] }
                     ]
                 });
 
@@ -81,7 +80,7 @@ function attachListeners(client) {
                 data.activeChannels[newChannel.id] = { ownerId: member.id };
                 saveGuildData(guildId, data);
                 
-                const guildCfg = await getGuildSettings(guildId);
+                const guildCfg = await globalContext.getGuildSettings(guildId);
                 // Send the interactive management panel to the new voice channel
                 sendControlPanel(newChannel, member, guildCfg.theme);
             } catch (error) {
@@ -174,7 +173,7 @@ function attachListeners(client) {
 }
 
 function sendControlPanel(channel, member, theme) {
-    const embed = createThemedEmbed(theme, {
+    const embed = globalContext.createThemedEmbed(theme, {
         title: '🎛️ Voice Control Panel',
         description: `Welcome, ${member}! Use the buttons below to manage your channel.`
     });
