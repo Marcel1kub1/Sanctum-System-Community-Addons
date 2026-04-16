@@ -1,0 +1,5 @@
+{
+    "name": "Music Player",
+    "description": "A powerful music bot that plays audio from YouTube, Spotify, and SoundCloud.",
+    "type": "feature"
+}
