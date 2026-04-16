@@ -1,4 +1,4 @@
-const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle, UserSelectMenuBuilder } = require('discord.js');
+const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -69,8 +69,7 @@ function attachListeners(client) {
                     parent: category ? category.id : null,
                     permissionOverwrites: [
                         { id: newState.guild.id, allow: [PermissionFlagsBits.Connect] },
-                        { id: member.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers, PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Speak] },
-                        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Connect, PermissionFlagsBits.ManageChannels] }
+                        { id: member.id, allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers] }
                     ]
                 });
 
@@ -92,9 +91,16 @@ function attachListeners(client) {
         // Cleanup empty channels when users leave
         if (oldState.channelId && oldState.channelId !== data.masterChannelId) {
             if (data.activeChannels[oldState.channelId]) {
-                const channel = oldState.channel;
-                if (channel && channel.members.size === 0) {
-                    channel.delete().catch(() => {});
+                // Fetch the channel fresh from the cache to ensure accurate member counts
+                const channel = oldState.guild.channels.cache.get(oldState.channelId);
+                
+                // Check if the channel exists and has NO humans left in it (ignores bots)
+                if (channel && channel.members.filter(m => !m.user.bot).size === 0) {
+                    channel.delete().catch(err => console.error('[Addon:VoiceChatSystem] Error deleting VC:', err));
+                    delete data.activeChannels[oldState.channelId];
+                    saveGuildData(guildId, data);
+                } else if (!channel) {
+                    // If the channel was already manually deleted, just clean the database
                     delete data.activeChannels[oldState.channelId];
                     saveGuildData(guildId, data);
                 }
@@ -126,45 +132,17 @@ function attachListeners(client) {
 
             const channelInfo = data.activeChannels[channel.id];
             if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', ephemeral: true });
-            
-            // Claim allows non-owners to take over if the owner left
-            if (interaction.customId === 'vc_claim') {
-                if (channelInfo.ownerId === interaction.user.id) return interaction.reply({ content: 'You already own this channel!', ephemeral: true });
-                if (channel.members.has(channelInfo.ownerId)) return interaction.reply({ content: 'The current owner is still in the channel.', ephemeral: true });
-                
-                data.activeChannels[channel.id].ownerId = interaction.user.id;
-                saveGuildData(guildId, data);
-                await channel.permissionOverwrites.edit(interaction.user.id, { ManageChannels: true, MuteMembers: true, DeafenMembers: true, MoveMembers: true, ViewChannel: true, SendMessages: true, Speak: true, Connect: true });
-                return interaction.reply({ content: '👑 You successfully claimed ownership of this channel!', ephemeral: true });
-            }
-
             if (channelInfo.ownerId !== interaction.user.id && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: '❌ Only the owner of this channel can use these controls.', ephemeral: true });
             }
 
             if (interaction.customId === 'vc_lock') {
                 await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: false });
-                return interaction.reply({ content: '🔒 Channel Locked! No one else can join.', ephemeral: true });
+                return interaction.reply({ content: '🔒 Channel Locked!', ephemeral: true });
             }
             if (interaction.customId === 'vc_unlock') {
                 await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: null });
-                return interaction.reply({ content: '🔓 Channel Unlocked! Anyone can join now.', ephemeral: true });
-            }
-            if (interaction.customId === 'vc_hide') {
-                await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: false });
-                return interaction.reply({ content: '👻 Channel Hidden! It is now invisible to others.', ephemeral: true });
-            }
-            if (interaction.customId === 'vc_unhide') {
-                await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: null });
-                return interaction.reply({ content: '👁️ Channel Visible! Everyone can see it again.', ephemeral: true });
-            }
-            if (interaction.customId === 'vc_mute_all') {
-                await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Speak: false });
-                return interaction.reply({ content: '🔇 Everyone else has been muted.', ephemeral: true });
-            }
-            if (interaction.customId === 'vc_unmute_all') {
-                await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Speak: null });
-                return interaction.reply({ content: '🔊 Everyone can speak again.', ephemeral: true });
+                return interaction.reply({ content: '🔓 Channel Unlocked!', ephemeral: true });
             }
             if (interaction.customId === 'vc_rename') {
                 const modal = new ModalBuilder().setCustomId('vc_modal_rename').setTitle('Rename Channel');
@@ -177,64 +155,6 @@ function attachListeners(client) {
                 const input = new TextInputBuilder().setCustomId('user_limit').setLabel('Number (0 for unlimited)').setStyle(TextInputStyle.Short).setValue(String(channel.userLimit || 0));
                 modal.addComponents(new ActionRowBuilder().addComponents(input));
                 return interaction.showModal(modal);
-            }
-            if (interaction.customId === 'vc_bitrate') {
-                const modal = new ModalBuilder().setCustomId('vc_modal_bitrate').setTitle('Set Audio Bitrate (kbps)');
-                const input = new TextInputBuilder().setCustomId('bitrate').setLabel('Bitrate (8-96 for standard servers)').setStyle(TextInputStyle.Short).setValue(String(channel.bitrate / 1000));
-                modal.addComponents(new ActionRowBuilder().addComponents(input));
-                return interaction.showModal(modal);
-            }
-
-            // Interactions requiring User Selection
-            if (interaction.customId === 'vc_permit_req') {
-                const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('vc_select_permit').setPlaceholder('Select a user to permit'));
-                return interaction.reply({ content: 'Who do you want to allow into your channel?', components: [row], ephemeral: true });
-            }
-            if (interaction.customId === 'vc_kick_req') {
-                const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('vc_select_kick').setPlaceholder('Select a user to kick'));
-                return interaction.reply({ content: 'Who do you want to kick from your channel?', components: [row], ephemeral: true });
-            }
-            if (interaction.customId === 'vc_ban_req') {
-                const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('vc_select_ban').setPlaceholder('Select a user to ban'));
-                return interaction.reply({ content: 'Who do you want to ban from your channel?', components: [row], ephemeral: true });
-            }
-            if (interaction.customId === 'vc_transfer_req') {
-                const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('vc_select_transfer').setPlaceholder('Select the new owner'));
-                return interaction.reply({ content: 'Who do you want to transfer ownership to?', components: [row], ephemeral: true });
-            }
-        }
-
-        // Handle the User Selection Menus
-        if (interaction.isUserSelectMenu() && interaction.customId.startsWith('vc_select_')) {
-            const channel = interaction.member?.voice?.channel;
-            if (!channel) return interaction.reply({ content: 'You must be in a voice channel.', ephemeral: true });
-            const channelInfo = data.activeChannels[channel.id];
-            if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', ephemeral: true });
-            if (channelInfo.ownerId !== interaction.user.id && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '❌ Only the owner can use this.', ephemeral: true });
-            }
-
-            const targetId = interaction.values[0];
-            const targetMember = interaction.guild.members.cache.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
-            if (!targetMember) return interaction.reply({ content: 'User not found.', ephemeral: true });
-            if (targetId === interaction.user.id) return interaction.reply({ content: 'You cannot perform this action on yourself.', ephemeral: true });
-
-            if (interaction.customId === 'vc_select_permit') {
-                await channel.permissionOverwrites.edit(targetId, { Connect: true, ViewChannel: true });
-                return interaction.reply({ content: `🟢 **${targetMember.user.tag}** has been permitted to join.`, ephemeral: true });
-            } else if (interaction.customId === 'vc_select_kick') {
-                if (targetMember.voice.channelId === channel.id) await targetMember.voice.disconnect();
-                return interaction.reply({ content: `🔴 **${targetMember.user.tag}** was kicked.`, ephemeral: true });
-            } else if (interaction.customId === 'vc_select_ban') {
-                await channel.permissionOverwrites.edit(targetId, { Connect: false, ViewChannel: false });
-                if (targetMember.voice.channelId === channel.id) await targetMember.voice.disconnect();
-                return interaction.reply({ content: `🚫 **${targetMember.user.tag}** is now banned from this channel.`, ephemeral: true });
-            } else if (interaction.customId === 'vc_select_transfer') {
-                data.activeChannels[channel.id].ownerId = targetId;
-                saveGuildData(guildId, data);
-                await channel.permissionOverwrites.edit(targetId, { ManageChannels: true, MuteMembers: true, DeafenMembers: true, MoveMembers: true, ViewChannel: true, SendMessages: true, Speak: true, Connect: true });
-                await channel.permissionOverwrites.edit(interaction.user.id, { ManageChannels: null }); // Revoke original owner perms
-                return interaction.reply({ content: `🤝 Ownership transferred to **${targetMember.user.tag}**.`, ephemeral: true });
             }
         }
 
@@ -255,13 +175,6 @@ function attachListeners(client) {
                 await channel.setUserLimit(limit).catch(console.error);
                 return interaction.reply({ content: `👥 Channel user limit set to **${limit === 0 ? 'Unlimited' : limit}**!`, ephemeral: true });
             }
-            if (interaction.customId === 'vc_modal_bitrate') {
-                const bitrateStr = interaction.fields.getTextInputValue('bitrate');
-                const bitrate = parseInt(bitrateStr);
-                if (isNaN(bitrate) || bitrate < 8 || bitrate > 384) return interaction.reply({ content: '❌ Invalid bitrate. Must be between 8 and 384.', ephemeral: true });
-                await channel.setBitrate(bitrate * 1000).catch(() => {});
-                if (!interaction.replied) return interaction.reply({ content: `📻 Audio bitrate updated to **${bitrate} kbps**!`, ephemeral: true });
-            }
         }
     });
 }
@@ -272,30 +185,14 @@ function sendControlPanel(channel, member, theme) {
         description: `Welcome, ${member}! Use the buttons below to manage your channel.`
     });
 
-    const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_lock').setLabel('Lock 🔒').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('vc_unlock').setLabel('Unlock 🔓').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('vc_hide').setLabel('Hide 👻').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('vc_unhide').setLabel('Unhide 👁️').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('vc_rename').setLabel('Rename ✏️').setStyle(ButtonStyle.Primary)
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('vc_lock').setLabel('Lock').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('vc_unlock').setLabel('Unlock').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('vc_rename').setLabel('Rename').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('vc_limit').setLabel('Limit Users').setStyle(ButtonStyle.Secondary)
     );
 
-    const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_limit').setLabel('Limit 👥').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('vc_bitrate').setLabel('Bitrate 📻').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('vc_mute_all').setLabel('Mute All 🔇').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('vc_unmute_all').setLabel('Unmute All 🔊').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('vc_claim').setLabel('Claim 👑').setStyle(ButtonStyle.Success)
-    );
-
-    const row3 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_permit_req').setLabel('Permit 🟢').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('vc_kick_req').setLabel('Kick 🔴').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('vc_ban_req').setLabel('Ban 🚫').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('vc_transfer_req').setLabel('Transfer 🤝').setStyle(ButtonStyle.Primary)
-    );
-
-    channel.send({ content: `${member}`, embeds: [embed], components: [row1, row2, row3] }).catch(console.error);
+    channel.send({ content: `${member}`, embeds: [embed], components: [row] }).catch(console.error);
 }
 
 module.exports = { initialize };
