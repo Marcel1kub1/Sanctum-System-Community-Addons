@@ -155,9 +155,25 @@ async function handlePlay(interaction) {
 
     const query = interaction.options.getString('query');
     // Use Lavalink to resolve the query. It supports URLs and search queries.
-    const result = await node.rest.resolve(query.startsWith('http') ? query : `ytsearch:${query}`);
-    if (!result || !result.tracks.length) {
+    const result = await node.rest.loadTrack(query.startsWith('http') ? query : `ytsearch:${query}`);
+    if (!result || result.loadType === 'LOAD_EMPTY' || result.loadType === 'LOAD_ERROR') {
         return interaction.editReply(`❌ No results found for "${query}"`);
+    }
+
+    let tracks;
+    let playlistName = null;
+
+    if (result.loadType === 'LOAD_PLAYLIST') {
+        tracks = result.data.tracks;
+        playlistName = result.data.info.name;
+    } else {
+        // For LOAD_SEARCH, result.data is an array. For LOAD_TRACK, it's a single object.
+        // We only want the first track from a search.
+        const track = Array.isArray(result.data) ? result.data[0] : result.data;
+        if (!track) {
+            return interaction.editReply(`❌ No results found for "${query}"`);
+        }
+        tracks = [track];
     }
 
     let serverQueue = guildQueues.get(interaction.guild.id);
@@ -209,7 +225,6 @@ async function handlePlay(interaction) {
         player = serverQueue.player;
     }
 
-    const tracks = result.loadType === 'PLAYLIST_LOADED' ? result.tracks : [result.tracks[0]];
     const songs = tracks.map(track => ({
         title: track.info.title,
         url: track.info.uri,
@@ -217,7 +232,7 @@ async function handlePlay(interaction) {
         duration: new Date(track.info.length).toISOString().slice(11, 19).replace(/^00:/, ''),
         thumbnail: track.info.uri.includes("youtube.com") ? `https://img.youtube.com/vi/${track.info.identifier}/mqdefault.jpg` : null,
         requestedBy: interaction.user,
-        track: track.track // The base64 encoded track from Lavalink
+        track: track.encoded // The base64 encoded track from Lavalink
     }));
 
     serverQueue.songs.push(...songs);
@@ -230,10 +245,10 @@ async function handlePlay(interaction) {
     // --- Reply to the user ---
     const guildSettings = await globalContext.getGuildSettings(interaction.guild.id);
     const theme = guildSettings.theme || 'dark';
-    if (result.loadType === 'PLAYLIST_LOADED') {
+    if (playlistName) {
         const embed = globalContext.createThemedEmbed(theme, {
             title: '🎶 Playlist Added',
-            description: `Added **${songs.length}** songs from **${result.playlistInfo.name}** to the queue.`,
+            description: `Added **${songs.length}** songs from **${playlistName}** to the queue.`,
         });
         return interaction.editReply({ embeds: [embed] });
     } else {
