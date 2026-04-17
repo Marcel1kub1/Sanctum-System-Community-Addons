@@ -3,7 +3,7 @@ const {
     Events,
 } = require('discord.js');
 const { Shoukaku, Connectors } = require('shoukaku');
-const config = require('../config/config');
+const config = require('../../config/config');
 
 // This map will store all the guild-specific music queues
 // It will hold an object with the player instance, song queue, and text channel.
