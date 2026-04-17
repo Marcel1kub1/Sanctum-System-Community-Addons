@@ -143,8 +143,14 @@ async function handlePlay(interaction) {
     let node;
     try {
         node = interaction.client.shoukaku.getNode();
+        if (!node) {
+            // This case handles when getNode() returns undefined but doesn't throw.
+            return interaction.editReply('No Lavalink node could be selected. Please check the bot console.');
+        }
     } catch (error) {
-        return interaction.editReply('No Lavalink node is currently available. Please check the bot console.');
+        // This case handles when getNode() throws an error (e.g., no nodes connected at all).
+        console.error('[MusicPlayer] Failed to get Lavalink node:', error);
+        return interaction.editReply('No Lavalink nodes are connected. Please check the bot console.');
     }
 
     const query = interaction.options.getString('query');
