@@ -142,7 +142,10 @@ async function handlePlay(interaction) {
 
     let node;
     try {
-        node = interaction.client.shoukaku.getNode();
+        // In Shoukaku V4, getNode() was removed. We use nodeResolver to get the best node.
+        node = interaction.client.shoukaku.options.nodeResolver(interaction.client.shoukaku.nodes);
+        // Fallback in case the resolver doesn't return anything but nodes are connected
+        if (!node) node = interaction.client.shoukaku.nodes.values().next().value;
         if (!node) {
             // This case handles when getNode() returns undefined but doesn't throw.
             return interaction.editReply('No Lavalink node could be selected. Please check the bot console.');
@@ -181,7 +184,8 @@ async function handlePlay(interaction) {
 
     if (!serverQueue) {
         try {
-            player = await node.joinChannel({
+            // In Shoukaku V4, you join channels via the main shoukaku instance, not the node.
+            player = await interaction.client.shoukaku.joinVoiceChannel({
                 guildId: interaction.guild.id,
                 channelId: voiceChannel.id,
                 shardId: interaction.guild.shardId,
@@ -267,14 +271,15 @@ async function playNextSong(guild, player) {
     const serverQueue = guildQueues.get(guild.id);
     if (!serverQueue || !serverQueue.songs.length) {
         serverQueue?.textChannel.send('✅ Queue finished. Leaving voice channel.');
-        if (player) player.connection.disconnect();
+        if (player) guild.client.shoukaku.leaveVoiceChannel(guild.id);
         guildQueues.delete(guild.id);
         return;
     }
 
     const song = serverQueue.songs[0];
     try {
-        await player.playTrack({ track: song.track });
+        // In Shoukaku V4, the track must be passed inside an 'encoded' property
+        await player.playTrack({ track: { encoded: song.track } });
 
         const guildSettings = await globalContext.getGuildSettings(guild.id);
         const theme = guildSettings.theme || 'dark';
@@ -310,7 +315,7 @@ async function handleStop(interaction) {
     if (!serverQueue || !serverQueue.player) return interaction.reply({ content: 'There is nothing to stop!', ephemeral: true });
 
     serverQueue.songs = [];
-    serverQueue.player.connection.disconnect(); // This will trigger the 'closed' event to clean up.
+    interaction.client.shoukaku.leaveVoiceChannel(interaction.guild.id); // V4 method to leave
     await interaction.reply('⏹️ Stopped the music and cleared the queue.');
 }
 
