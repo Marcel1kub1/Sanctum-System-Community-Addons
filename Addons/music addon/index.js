@@ -158,7 +158,7 @@ async function handlePlay(interaction) {
 
     const query = interaction.options.getString('query');
     // Use Lavalink to resolve the query. It supports URLs and search queries.
-    const result = await node.rest.loadTrack(query.startsWith('http') ? query : `ytsearch:${query}`);
+    const result = await interaction.client.shoukaku.rest.loadTrack(query.startsWith('http') ? query : `ytsearch:${query}`);
     if (!result || result.loadType === 'LOAD_EMPTY' || result.loadType === 'LOAD_ERROR') {
         return interaction.editReply(`❌ No results found for "${query}"`);
     }
