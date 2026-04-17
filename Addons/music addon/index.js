@@ -11,7 +11,6 @@ const guildQueues = new Map();
 
 // These will be initialized once across all guilds.
 let shoukaku = null;
-let listenersAttached = false;
 let globalContext = null;
 
 // --- Define all the slash commands for the music bot ---
@@ -83,8 +82,8 @@ function initialize(client, guildId, context) {
     });
 
     // Attach the global interaction listener only once
-    if (!listenersAttached) {
-        listenersAttached = true;
+    if (!client.__musicListenersAttached) {
+        client.__musicListenersAttached = true;
         attachMusicListeners(client);
     }
 }
@@ -158,25 +157,25 @@ async function handlePlay(interaction) {
 
     const query = interaction.options.getString('query');
     // Use Lavalink to resolve the query. It supports URLs and search queries.
-    const result = await interaction.client.shoukaku.rest.loadTrack(query.startsWith('http') ? query : `ytsearch:${query}`);
-    if (!result || result.loadType === 'LOAD_EMPTY' || result.loadType === 'LOAD_ERROR') {
+    const result = await node.rest.resolve(query.startsWith('http') ? query : `ytsearch:${query}`);
+    
+    // Lavalink V4 uses lowercase loadTypes (empty, error, track, playlist, search)
+    if (!result || result.loadType === 'empty' || result.loadType === 'error') {
         return interaction.editReply(`❌ No results found for "${query}"`);
     }
 
-    let tracks;
+    let tracks = [];
     let playlistName = null;
 
-    if (result.loadType === 'LOAD_PLAYLIST') {
+    if (result.loadType === 'playlist') {
         tracks = result.data.tracks;
         playlistName = result.data.info.name;
-    } else {
-        // For LOAD_SEARCH, result.data is an array. For LOAD_TRACK, it's a single object.
-        // We only want the first track from a search.
-        const track = Array.isArray(result.data) ? result.data[0] : result.data;
-        if (!track) {
-            return interaction.editReply(`❌ No results found for "${query}"`);
-        }
+    } else if (result.loadType === 'search') {
+        const track = result.data[0];
+        if (!track) return interaction.editReply(`❌ No results found for "${query}"`);
         tracks = [track];
+    } else if (result.loadType === 'track') {
+        tracks = [result.data];
     }
 
     let serverQueue = guildQueues.get(interaction.guild.id);
