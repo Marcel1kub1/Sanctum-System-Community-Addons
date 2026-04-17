@@ -196,14 +196,6 @@ async function handlePlay(interaction) {
                 shardId: interaction.guild.shardId,
                 deaf: true
             });
-
-            // Add a one-time listener to catch immediate connection failures like E2EE
-            player.once('closed', (reason) => {
-                if (reason?.code === 4017) {
-                    interaction.editReply('❌ I cannot play music in this voice channel because it has End-to-End Encryption (E2EE) enabled. Please disable it in the channel settings.').catch(() => {});
-                    guildQueues.delete(interaction.guild.id);
-                }
-            });
         } catch (error) {
             console.error('[MusicPlayer] Error joining voice channel:', error);
             return interaction.editReply('Could not join the voice channel!');
@@ -235,6 +227,12 @@ async function handlePlay(interaction) {
         // Clean up when the connection is closed.
         player.on('closed', (reason) => {
             console.log(`[MusicPlayer] Player closed in guild ${interaction.guild.id}:`, reason);
+            if (reason && reason.code === 4017) {
+                const q = guildQueues.get(interaction.guild.id);
+                if (q && q.textChannel) {
+                    q.textChannel.send('❌ **Connection blocked:** This voice channel has **End-to-End Encryption (E2EE)** enabled.\n\n**How to fix:**\n1. Hover over the Voice Channel and click the **Edit Channel (Gear Icon)**.\n2. Go to the **Overview** tab.\n3. Scroll down and turn **OFF** the toggle for **Enable End-to-End Encryption**.\n4. Save your changes and try playing a song again!').catch(() => {});
+                }
+            }
             guildQueues.delete(interaction.guild.id);
         });
 
