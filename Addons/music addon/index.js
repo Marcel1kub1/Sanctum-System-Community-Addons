@@ -81,49 +81,55 @@ function initialize(client, guildId, context) {
         client.application?.commands.create(command.toJSON(), guildId).catch(console.error);
     });
 
-    // Attach the global interaction listener only once
-    if (!client.__musicListenersAttached) {
-        client.__musicListenersAttached = true;
-        attachMusicListeners(client);
+    // Hot-reloadable interaction listener setup
+    if (client.__musicListener) {
+        client.removeListener(Events.InteractionCreate, client.__musicListener);
     }
-}
 
-/**
- * Attaches a single, global listener for all music-related interactions.
- */
-function attachMusicListeners(client) {
-    client.on(Events.InteractionCreate, async interaction => {
+    client.__musicListener = async interaction => {
         if (!interaction.isChatInputCommand() || !interaction.guild) return;
 
         // Check if the command is one of our music commands
         const isMusicCommand = commands.some(c => c.name === interaction.commandName);
         if (!isMusicCommand) return;
 
-        // Route the interaction to the correct handler function
-        switch (interaction.commandName) {
-            case 'play':
-                await handlePlay(interaction);
-                break;
-            case 'skip':
-                await handleSkip(interaction);
-                break;
-            case 'stop':
-                await handleStop(interaction);
-                break;
-            case 'queue':
-                await handleQueue(interaction);
-                break;
-            case 'nowplaying':
-                await handleNowPlaying(interaction);
-                break;
-            case 'pause':
-                await handlePause(interaction);
-                break;
-            case 'resume':
-                await handleResume(interaction);
-                break;
+        try {
+            // Route the interaction to the correct handler function
+            switch (interaction.commandName) {
+                case 'play':
+                    await handlePlay(interaction);
+                    break;
+                case 'skip':
+                    await handleSkip(interaction);
+                    break;
+                case 'stop':
+                    await handleStop(interaction);
+                    break;
+                case 'queue':
+                    await handleQueue(interaction);
+                    break;
+                case 'nowplaying':
+                    await handleNowPlaying(interaction);
+                    break;
+                case 'pause':
+                    await handlePause(interaction);
+                    break;
+                case 'resume':
+                    await handleResume(interaction);
+                    break;
+            }
+        } catch (error) {
+            console.error(`[MusicPlayer] Command Error (${interaction.commandName}):`, error);
+            const errorMsg = '❌ An error occurred while executing this command. It may have expired or timed out.';
+            if (interaction.replied || interaction.deferred) {
+                await interaction.editReply({ content: errorMsg, embeds: [] }).catch(() => {});
+            } else {
+                await interaction.reply({ content: errorMsg, ephemeral: true }).catch(() => {});
+            }
         }
-    });
+    };
+
+    client.on(Events.InteractionCreate, client.__musicListener);
 }
 
 // --- Command Handler Functions ---
