@@ -196,6 +196,14 @@ async function handlePlay(interaction) {
                 shardId: interaction.guild.shardId,
                 deaf: true
             });
+
+            // Add a one-time listener to catch immediate connection failures like E2EE
+            player.once('closed', (reason) => {
+                if (reason?.code === 4017) {
+                    interaction.editReply('❌ I cannot play music in this voice channel because it has End-to-End Encryption (E2EE) enabled. Please disable it in the channel settings.').catch(() => {});
+                    guildQueues.delete(interaction.guild.id);
+                }
+            });
         } catch (error) {
             console.error('[MusicPlayer] Error joining voice channel:', error);
             return interaction.editReply('Could not join the voice channel!');
