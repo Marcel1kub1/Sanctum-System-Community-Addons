@@ -131,8 +131,10 @@ async function handlePlay(interaction) {
         return interaction.editReply('Lavalink is not ready. Please try again in a moment.');
     }
 
-    const node = interaction.client.shoukaku.getNode();
-    if (!node) {
+    let node;
+    try {
+        node = interaction.client.shoukaku.getNode();
+    } catch (error) {
         return interaction.editReply('No Lavalink node is currently available. Please check the bot console.');
     }
 
