@@ -66,6 +66,15 @@ function initialize(client, guildId, context) {
         shoukaku.on('error', (name, error) => console.error(`[Lavalink] Node '${name}' encountered an error:`, error));
         shoukaku.on('close', (name, code, reason) => console.log(`[Lavalink] Node '${name}' closed, code ${code}, reason: ${reason || 'No reason'}`));
         shoukaku.on('disconnect', (name, players, moved) => console.log(`[Lavalink] Node '${name}' disconnected, moved ${moved} players.`));
+
+        // Fix for dynamic addon loading: Shoukaku misses the Discord 'ready' event because the bot is already online.
+        if (client.isReady() && !shoukaku.id) {
+            console.log('[Lavalink] Bot is already ready, manually triggering Lavalink connection...');
+            shoukaku.id = client.user.id;
+            for (const node of config.lavalink.nodes) {
+                shoukaku.addNode(node);
+            }
+        }
     }
 
     // Register all music commands for this specific guild
