@@ -1,2 +1,4 @@
 # Sanctum-System-Community-Addons
-This is the official repository for the sanctum system bot here you can get community add ons to upload an addon you need to be in the community server 
+Welcome to the official Sanctum System Addon Repository here you can get community addons that are all provided by our community 
+Our Moderators are permantly reviewing the addons to check for addons that are used to hack or etc
+By using the addons you accept that you use these addopns at your own risk
