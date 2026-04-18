@@ -1,6 +1,9 @@
 const {
     SlashCommandBuilder,
     Events,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
 } = require('discord.js');
 const { Shoukaku, Connectors } = require('shoukaku');
 const config = require('../../config/config');
@@ -87,44 +90,37 @@ function initialize(client, guildId, context) {
     }
 
     client.__musicListener = async interaction => {
-        if (!interaction.isChatInputCommand() || !interaction.guild) return;
+        if (!interaction.guild) return;
 
-        // Check if the command is one of our music commands
-        const isMusicCommand = commands.some(c => c.name === interaction.commandName);
-        if (!isMusicCommand) return;
+        if (interaction.isChatInputCommand()) {
+            const isMusicCommand = commands.some(c => c.name === interaction.commandName);
+            if (!isMusicCommand) return;
 
-        try {
-            // Route the interaction to the correct handler function
-            switch (interaction.commandName) {
-                case 'play':
-                    await handlePlay(interaction);
-                    break;
-                case 'skip':
-                    await handleSkip(interaction);
-                    break;
-                case 'stop':
-                    await handleStop(interaction);
-                    break;
-                case 'queue':
-                    await handleQueue(interaction);
-                    break;
-                case 'nowplaying':
-                    await handleNowPlaying(interaction);
-                    break;
-                case 'pause':
-                    await handlePause(interaction);
-                    break;
-                case 'resume':
-                    await handleResume(interaction);
-                    break;
+            try {
+                switch (interaction.commandName) {
+                    case 'play': await handlePlay(interaction); break;
+                    case 'skip': await handleSkip(interaction); break;
+                    case 'stop': await handleStop(interaction); break;
+                    case 'queue': await handleQueue(interaction); break;
+                    case 'nowplaying': await handleNowPlaying(interaction); break;
+                    case 'pause': await handlePause(interaction); break;
+                    case 'resume': await handleResume(interaction); break;
+                }
+            } catch (error) {
+                console.error(`[MusicPlayer] Command Error (${interaction.commandName}):`, error);
+                const errorMsg = '❌ An error occurred while executing this command. It may have expired or timed out.';
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.editReply({ content: errorMsg, embeds: [] }).catch(() => {});
+                } else {
+                    await interaction.reply({ content: errorMsg, ephemeral: true }).catch(() => {});
+                }
             }
-        } catch (error) {
-            console.error(`[MusicPlayer] Command Error (${interaction.commandName}):`, error);
-            const errorMsg = '❌ An error occurred while executing this command. It may have expired or timed out.';
-            if (interaction.replied || interaction.deferred) {
-                await interaction.editReply({ content: errorMsg, embeds: [] }).catch(() => {});
-            } else {
-                await interaction.reply({ content: errorMsg, ephemeral: true }).catch(() => {});
+        } else if (interaction.isButton()) {
+            if (!interaction.customId.startsWith('music_')) return;
+            try {
+                await handleMusicButtons(interaction);
+            } catch (error) {
+                console.error(`[MusicPlayer] Button Error (${interaction.customId}):`, error);
             }
         }
     };
@@ -204,7 +200,10 @@ async function handlePlay(interaction) {
         const newQueue = {
             player: player,
             songs: [],
-            textChannel: interaction.channel
+            textChannel: interaction.channel,
+            loop: false,
+            paused: false,
+            nowPlayingMessage: null
         };
         guildQueues.set(interaction.guild.id, newQueue);
         serverQueue = newQueue;
@@ -214,7 +213,9 @@ async function handlePlay(interaction) {
         player.on('end', () => {
             const q = guildQueues.get(interaction.guild.id);
             if (q) {
-                q.songs.shift();
+                if (!q.loop) {
+                    q.songs.shift();
+                }
                 playNextSong(interaction.guild, q.player);
             }
         });
@@ -245,7 +246,7 @@ async function handlePlay(interaction) {
         url: track.info.uri,
         // Format duration from ms to HH:MM:SS or MM:SS
         duration: new Date(track.info.length).toISOString().slice(11, 19).replace(/^00:/, ''),
-        thumbnail: track.info.uri.includes("youtube.com") ? `https://img.youtube.com/vi/${track.info.identifier}/mqdefault.jpg` : null,
+        thumbnail: (track.info.uri.includes("youtube") || track.info.uri.includes("youtu.be")) ? `https://img.youtube.com/vi/${track.info.identifier}/hqdefault.jpg` : null,
         requestedBy: interaction.user,
         track: track.encoded // The base64 encoded track from Lavalink
     }));
@@ -261,19 +262,28 @@ async function handlePlay(interaction) {
     const guildSettings = await globalContext.getGuildSettings(interaction.guild.id);
     const theme = guildSettings.theme || 'dark';
     if (playlistName) {
-        const embed = globalContext.createThemedEmbed(theme, {
+        const embedParams = {
             title: '🎶 Playlist Added',
             description: `Added **${songs.length}** songs from **${playlistName}** to the queue.`,
-        });
+        };
+        if (songs[0].thumbnail) {
+            embedParams.thumbnail = { url: songs[0].thumbnail };
+            embedParams.image = { url: songs[0].thumbnail };
+        }
+        const embed = globalContext.createThemedEmbed(theme, embedParams);
         return interaction.editReply({ embeds: [embed] });
     } else {
-        const embed = globalContext.createThemedEmbed(theme, {
+        const embedParams = {
             title: '🎵 Song Added to Queue',
-            description: `[${songs[0].title}](${songs[0].url})`,
-            thumbnail: { url: songs[0].thumbnail }, // Can be null for non-YT tracks
+            description: `**[${songs[0].title}](${songs[0].url})**`,
             fields: [{ name: 'Duration', value: songs[0].duration, inline: true }],
             footer: { text: `Requested by ${songs[0].requestedBy.tag}` }
-        });
+        };
+        if (songs[0].thumbnail) {
+            embedParams.thumbnail = { url: songs[0].thumbnail };
+            embedParams.image = { url: songs[0].thumbnail };
+        }
+        const embed = globalContext.createThemedEmbed(theme, embedParams);
         return interaction.editReply({ embeds: [embed] });
     }
 }
@@ -294,19 +304,32 @@ async function playNextSong(guild, player) {
 
         const guildSettings = await globalContext.getGuildSettings(guild.id);
         const theme = guildSettings.theme || 'dark';
-        const embed = globalContext.createThemedEmbed(theme, {
+        const embedParams = {
             title: '▶️ Now Playing',
-            description: `${song.title}`,
-            thumbnail: { url: song.thumbnail },
+            description: `**${song.title}**`,
             fields: [{ name: 'Duration', value: song.duration, inline: true }],
             footer: { text: `Requested by ${song.requestedBy.tag}` }
+        };
+        if (song.thumbnail) {
+            embedParams.thumbnail = { url: song.thumbnail };
+            embedParams.image = { url: song.thumbnail };
+        }
+        const embed = globalContext.createThemedEmbed(theme, embedParams);
+        
+        if (serverQueue.nowPlayingMessage) {
+            serverQueue.nowPlayingMessage.edit({ components: [] }).catch(() => {});
+        }
+
+        serverQueue.nowPlayingMessage = await serverQueue.textChannel.send({ 
+            embeds: [embed],
+            components: [getMusicControlRow(serverQueue)]
         });
-        serverQueue.textChannel.send({ embeds: [embed] });
     } catch (error) {
         console.error(`[MusicPlayer] Play Error in guild ${guild.id}:`, error);
         serverQueue.textChannel.send(`❌ Error playing ${song.title}. Skipping.`);
-        // The 'end' event should fire on error, which will then call this function again for the next song.
-        serverQueue.songs.shift();
+        if (!serverQueue.loop) {
+            serverQueue.songs.shift();
+        }
         playNextSong(guild, player);
     }
 }
@@ -326,7 +349,12 @@ async function handleStop(interaction) {
     if (!serverQueue || !serverQueue.player) return interaction.reply({ content: 'There is nothing to stop!', ephemeral: true });
 
     serverQueue.songs = [];
+    serverQueue.loop = false;
+    if (serverQueue.nowPlayingMessage) {
+        serverQueue.nowPlayingMessage.edit({ components: [] }).catch(() => {});
+    }
     interaction.client.shoukaku.leaveVoiceChannel(interaction.guild.id); // V4 method to leave
+    guildQueues.delete(interaction.guild.id);
     await interaction.reply('⏹️ Stopped the music and cleared the queue.');
 }
 
@@ -344,11 +372,16 @@ async function handleQueue(interaction) {
         .map((song, index) => `${index + 1}. ${song.title} \`[${song.duration}]\``)
         .join('\n');
 
-    const embed = globalContext.createThemedEmbed(theme, {
+    const embedParams = {
         title: '🎶 Music Queue',
         description: `**Now Playing:**\n${nowPlaying.title} \`[${nowPlaying.duration}]\`\n\n**Up Next:**\n${queueString || 'Nothing else in the queue.'}`,
         footer: { text: `Total songs in queue: ${serverQueue.songs.length}` }
-    });
+    };
+    if (nowPlaying.thumbnail) {
+        embedParams.thumbnail = { url: nowPlaying.thumbnail };
+        embedParams.image = { url: nowPlaying.thumbnail };
+    }
+    const embed = globalContext.createThemedEmbed(theme, embedParams);
 
     await interaction.reply({ embeds: [embed] });
 }
@@ -362,14 +395,23 @@ async function handleNowPlaying(interaction) {
     const guildSettings = await globalContext.getGuildSettings(interaction.guild.id);
     const theme = guildSettings.theme || 'dark';
 
-    const embed = globalContext.createThemedEmbed(theme, {
+    const embedParams = {
         title: '▶️ Now Playing',
-        description: `${song.title}`,
-        thumbnail: { url: song.thumbnail },
+        description: `**${song.title}**`,
         fields: [{ name: 'Duration', value: song.duration, inline: true }],
         footer: { text: `Requested by ${song.requestedBy.tag}` }
-    });
-    await interaction.reply({ embeds: [embed] });
+    };
+    if (song.thumbnail) {
+        embedParams.thumbnail = { url: song.thumbnail };
+        embedParams.image = { url: song.thumbnail };
+    }
+    const embed = globalContext.createThemedEmbed(theme, embedParams);
+    
+    if (serverQueue.nowPlayingMessage) {
+        serverQueue.nowPlayingMessage.edit({ components: [] }).catch(() => {});
+    }
+    const message = await interaction.reply({ embeds: [embed], components: [getMusicControlRow(serverQueue)], fetchReply: true });
+    serverQueue.nowPlayingMessage = message;
 }
 
 async function handlePause(interaction) {
@@ -377,7 +419,11 @@ async function handlePause(interaction) {
     const serverQueue = guildQueues.get(interaction.guild.id);
     if (!serverQueue || !serverQueue.player) return interaction.reply({ content: 'There is nothing to pause!', ephemeral: true });
     
+    serverQueue.paused = true;
     const success = await serverQueue.player.setPaused(true);
+    if (serverQueue.nowPlayingMessage) {
+        serverQueue.nowPlayingMessage.edit({ components: [getMusicControlRow(serverQueue)] }).catch(() => {});
+    }
     await interaction.reply({ content: success ? '⏸️ Paused the music.' : 'Could not pause the music.', ephemeral: true });
 }
 
@@ -386,8 +432,75 @@ async function handleResume(interaction) {
     const serverQueue = guildQueues.get(interaction.guild.id);
     if (!serverQueue || !serverQueue.player) return interaction.reply({ content: 'There is nothing to resume!', ephemeral: true });
 
+    serverQueue.paused = false;
     const success = await serverQueue.player.setPaused(false);
+    if (serverQueue.nowPlayingMessage) {
+        serverQueue.nowPlayingMessage.edit({ components: [getMusicControlRow(serverQueue)] }).catch(() => {});
+    }
     await interaction.reply({ content: success ? '▶️ Resumed the music.' : 'Could not resume the music.', ephemeral: true });
+}
+
+function getMusicControlRow(serverQueue) {
+    const playPauseBtn = new ButtonBuilder()
+        .setCustomId('music_toggle_pause')
+        .setLabel(serverQueue.paused ? '▶️ Resume' : '⏸️ Pause')
+        .setStyle(serverQueue.paused ? ButtonStyle.Success : ButtonStyle.Secondary);
+
+    const skipBtn = new ButtonBuilder()
+        .setCustomId('music_skip')
+        .setLabel('⏭️ Skip')
+        .setStyle(ButtonStyle.Primary);
+
+    const stopBtn = new ButtonBuilder()
+        .setCustomId('music_stop')
+        .setLabel('⏹️ Stop')
+        .setStyle(ButtonStyle.Danger);
+
+    const loopBtn = new ButtonBuilder()
+        .setCustomId('music_toggle_loop')
+        .setLabel(serverQueue.loop ? '🔁 Loop: ON' : '🔁 Loop: OFF')
+        .setStyle(serverQueue.loop ? ButtonStyle.Success : ButtonStyle.Secondary);
+
+    return new ActionRowBuilder().addComponents(playPauseBtn, skipBtn, stopBtn, loopBtn);
+}
+
+async function handleMusicButtons(interaction) {
+    const serverQueue = guildQueues.get(interaction.guild.id);
+    if (!serverQueue || !serverQueue.player) {
+        return interaction.reply({ content: '❌ No active music session.', ephemeral: true });
+    }
+    
+    const botVoiceChannel = interaction.guild.members.me?.voice?.channelId;
+    if (!interaction.member.voice.channel || interaction.member.voice.channel.id !== botVoiceChannel) {
+        return interaction.reply({ content: '❌ You must be in the same voice channel as the bot to use these controls.', ephemeral: true });
+    }
+
+    switch (interaction.customId) {
+        case 'music_toggle_pause':
+            serverQueue.paused = !serverQueue.paused;
+            await serverQueue.player.setPaused(serverQueue.paused);
+            await interaction.update({ components: [getMusicControlRow(serverQueue)] });
+            break;
+        case 'music_skip':
+            await interaction.deferUpdate();
+            serverQueue.player.stopTrack(); // Triggers 'end' event, playing next track
+            break;
+        case 'music_stop':
+            serverQueue.songs = [];
+            serverQueue.loop = false;
+            if (serverQueue.nowPlayingMessage) {
+                serverQueue.nowPlayingMessage.edit({ components: [] }).catch(() => {});
+            }
+            interaction.client.shoukaku.leaveVoiceChannel(interaction.guild.id);
+            guildQueues.delete(interaction.guild.id);
+            await interaction.update({ components: [] });
+            interaction.followUp({ content: '⏹️ Music stopped and queue cleared.', ephemeral: true });
+            break;
+        case 'music_toggle_loop':
+            serverQueue.loop = !serverQueue.loop;
+            await interaction.update({ components: [getMusicControlRow(serverQueue)] });
+            break;
+    }
 }
 
 module.exports = { initialize };
