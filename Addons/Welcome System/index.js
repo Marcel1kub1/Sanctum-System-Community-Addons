@@ -1,4 +1,4 @@
-const { Events, PermissionFlagsBits, ChannelType, RoleSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
+const { Events, PermissionFlagsBits, ChannelType, RoleSelectMenuBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -31,8 +31,9 @@ function getGuildData(guildId) {
     return {
         enabled: false,
         channelId: null,
-        message: 'Welcome {user} to {guild}!',
-        roleId: null
+        message: 'Welcome to {guild}! Please click the button below to verify and gain access to the server.',
+        unverifiedRoleId: null,
+        memberRoleId: null
     };
 }
 
@@ -71,14 +72,12 @@ function initialize(client, guildId, context) {
             name: 'welcome',
             description: 'Configure the welcome system for this server.',
             defaultMemberPermissions: PermissionFlagsBits.Administrator,
-            options: [
-                { name: 'toggle', description: 'Enable or disable the welcome system.', type: 1 /* SUB_COMMAND */ },
-                { name: 'setchannel', description: 'Set the channel where welcome messages will be sent.', type: 1, options: [{ name: 'channel', description: 'The channel to use.', type: 7 /* CHANNEL */, channel_types: [ChannelType.GuildText], required: true }] },
-                { name: 'setmessage', description: 'Set the welcome message. Use {user} for mention and {guild} for server name.', type: 1, options: [{ name: 'message', description: 'The welcome message string.', type: 3 /* STRING */, required: true }] },
-                { name: 'setrole', description: 'Set a role to be automatically assigned to new members.', type: 1 },
-                { name: 'removerole', description: 'Remove the autorole for new members.', type: 1 },
-                { name: 'status', description: 'View the current welcome system configuration.', type: 1 }
-            ]
+                options: [
+                    { name: 'setup', description: 'Run the interactive setup for the verification system.', type: 1 /* SUB_COMMAND */ },
+                    { name: 'post', description: 'Post the verification message in the configured channel.', type: 1 /* SUB_COMMAND */ },
+                    { name: 'toggle', description: 'Enable or disable the verification system.', type: 1 /* SUB_COMMAND */ },
+                    { name: 'status', description: 'View the current verification system configuration.', type: 1 /* SUB_COMMAND */ }
+                ]
         }).catch(console.error);
     };
 
@@ -215,4 +214,3 @@ async function welcomeSystemInteractionCreate(interaction) {
 }
 
 module.exports = { initialize };
-
