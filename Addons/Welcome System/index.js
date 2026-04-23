@@ -1,4 +1,4 @@
-const { Events, PermissionFlagsBits, ChannelType, RoleSelectMenuBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Events, PermissionFlagsBits, ChannelType, RoleSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -31,9 +31,8 @@ function getGuildData(guildId) {
     return {
         enabled: false,
         channelId: null,
-        message: 'Welcome to {guild}! Please click the button below to verify and gain access to the server.',
-        unverifiedRoleId: null,
-        memberRoleId: null
+        message: 'Welcome {user} to {guild}!',
+        roleId: null
     };
 }
 
@@ -73,10 +72,8 @@ function initialize(client, guildId, context) {
             description: 'Configure the welcome system for this server.',
             defaultMemberPermissions: PermissionFlagsBits.Administrator,
                 options: [
-                    { name: 'setup', description: 'Run the interactive setup for the verification system.', type: 1 /* SUB_COMMAND */ },
-                    { name: 'post', description: 'Post the verification message in the configured channel.', type: 1 /* SUB_COMMAND */ },
-                    { name: 'toggle', description: 'Enable or disable the verification system.', type: 1 /* SUB_COMMAND */ },
-                    { name: 'status', description: 'View the current verification system configuration.', type: 1 /* SUB_COMMAND */ }
+                    { name: 'setup', description: 'Run the interactive setup for the welcome system.', type: 1 /* SUB_COMMAND */ },
+                    { name: 'status', description: 'View the current welcome system configuration.', type: 1 /* SUB_COMMAND */ }
                 ]
         }).catch(console.error);
     };
@@ -134,81 +131,160 @@ async function welcomeSystemGuildMemberAdd(member) {
 }
 
 /**
+ * Creates the payload for the welcome system dashboard (embeds and components).
+ * @param {string} guildId The ID of the guild.
+ * @param {boolean} isSetup If true, includes configuration buttons.
+ * @returns {Promise<object>} The payload for a message reply/update.
+ */
+async function createWelcomeDashboardPayload(guildId, isSetup = false) {
+    const data = getGuildData(guildId);
+    const { theme } = await globalContext.getGuildSettings(guildId);
+
+    const statusChannel = data.channelId ? `<#${data.channelId}>` : 'Not set';
+    const statusRole = data.roleId ? `<@&${data.roleId}>` : 'Not set';
+    const status = data.enabled ? 'Enabled' : 'Disabled';
+
+    const embed = globalContext.createThemedEmbed(theme, {
+        title: isSetup ? 'Welcome System Setup' : 'Welcome System Status',
+        description: isSetup ? 'Use the buttons below to configure the welcome system.' : null,
+        fields: [
+            { name: 'Status', value: status, inline: true },
+            { name: 'Welcome Channel', value: statusChannel, inline: true },
+            { name: 'Autorole', value: statusRole, inline: true },
+            { name: 'Message', value: `\`\`\`\n${data.message}\n\`\`\`` }
+        ]
+    });
+
+    if (!isSetup) {
+        return { embeds: [embed], components: [] };
+    }
+
+    const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('welcome_setup_toggle')
+            .setLabel(data.enabled ? 'Disable System' : 'Enable System')
+            .setStyle(data.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId('welcome_setup_channel')
+            .setLabel('Set Channel')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId('welcome_setup_message')
+            .setLabel('Set Message')
+            .setStyle(ButtonStyle.Secondary)
+    );
+
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('welcome_setup_role')
+            .setLabel('Set Role')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId('welcome_setup_removerole')
+            .setLabel('Remove Role')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(!data.roleId)
+    );
+
+    return { embeds: [embed], components: [row1, row2], ephemeral: true };
+}
+
+/**
  * Handles interactions for the /welcome command and its components.
  * @param {import('discord.js').Interaction} interaction The interaction object.
  */
 async function welcomeSystemInteractionCreate(interaction) {
     if (!interaction.inGuild()) return;
-    if (!interaction.isChatInputCommand() && !interaction.isRoleSelectMenu()) return;
-    if (interaction.commandName !== 'welcome' && interaction.customId !== 'welcome_role_select') return;
+
+    const isWelcomeInteraction = (
+        (interaction.isChatInputCommand() && interaction.commandName === 'welcome') ||
+        (interaction.isButton() && interaction.customId.startsWith('welcome_setup_')) ||
+        (interaction.isRoleSelectMenu() && interaction.customId === 'welcome_setup_role_select') ||
+        (interaction.isChannelSelectMenu() && interaction.customId === 'welcome_setup_channel_select') ||
+        (interaction.isModalSubmit() && interaction.customId === 'welcome_setup_message_modal')
+    );
+    if (!isWelcomeInteraction) return;
 
     const guildId = interaction.guild.id;
     let data = getGuildData(guildId);
 
-    // Handle role select menu submission
-    if (interaction.isRoleSelectMenu() && interaction.customId === 'welcome_role_select') {
+    // --- Setup Dashboard Button Handlers ---
+    if (interaction.isButton()) {
+        await interaction.deferUpdate();
+        switch (interaction.customId) {
+            case 'welcome_setup_toggle':
+                data.enabled = !data.enabled;
+                saveGuildData(guildId, data);
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+            case 'welcome_setup_channel':
+                const channelMenu = new ChannelSelectMenuBuilder().setCustomId('welcome_setup_channel_select').setPlaceholder('Select a channel for welcome messages').setChannelTypes([ChannelType.GuildText]);
+                const channelRow = new ActionRowBuilder().addComponents(channelMenu);
+                return interaction.editReply({ content: 'Please select a channel from the menu below.', components: [channelRow], embeds: [] });
+            case 'welcome_setup_message':
+                const modal = new ModalBuilder().setCustomId('welcome_setup_message_modal').setTitle('Set Welcome Message');
+                const messageInput = new TextInputBuilder().setCustomId('message_input').setLabel("Welcome Message").setPlaceholder('Use {user} for user mention and {guild} for server name.').setStyle(TextInputStyle.Paragraph).setValue(data.message);
+                modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+                return interaction.showModal(modal);
+            case 'welcome_setup_role':
+                const roleMenu = new RoleSelectMenuBuilder().setCustomId('welcome_setup_role_select').setPlaceholder('Select a role to assign to new members');
+                const roleRow = new ActionRowBuilder().addComponents(roleMenu);
+                return interaction.editReply({ content: 'Please select a role from the menu below. I must have a role higher than the selected role to be able to assign it.', components: [roleRow], embeds: [] });
+            case 'welcome_setup_removerole':
+                data.roleId = null;
+                saveGuildData(guildId, data);
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+        }
+    }
+
+    // --- Setup Component Submit Handlers ---
+    if (interaction.isChannelSelectMenu()) {
+        await interaction.deferUpdate();
+        data.channelId = interaction.values[0];
+        saveGuildData(guildId, data);
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+    }
+
+    if (interaction.isRoleSelectMenu()) {
+        await interaction.deferUpdate();
         const roleId = interaction.values[0];
         const role = await interaction.guild.roles.fetch(roleId);
 
         if (!role) {
-            return interaction.update({ content: '❌ This role no longer exists.', components: [] });
+            await interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+            return interaction.followUp({ content: '❌ This role no longer exists.', ephemeral: true });
         }
         if (role.managed || role.position >= interaction.guild.members.me.roles.highest.position) {
-            return interaction.update({ content: '❌ I cannot assign this role. It is managed by an integration or is higher than my highest role.', components: [] });
+            await interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+            return interaction.followUp({ content: '❌ I cannot assign this role. It is managed by an integration or is higher than my highest role.', ephemeral: true });
         }
 
         data.roleId = roleId;
         saveGuildData(guildId, data);
-        return interaction.update({ content: `✅ New members will now automatically receive the **${role.name}** role.`, components: [] });
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
     }
 
-    // Handle slash command
-    if (interaction.isChatInputCommand() && interaction.commandName === 'welcome') {
+    if (interaction.isModalSubmit()) {
+        await interaction.deferUpdate();
+        data.message = interaction.fields.getTextInputValue('message_input');
+        saveGuildData(guildId, data);
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+    }
+
+    // --- Slash Command Handler ---
+    if (interaction.isChatInputCommand()) {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({ content: '❌ You need Administrator permissions to use this command.', ephemeral: true });
         }
 
         const subcommand = interaction.options.getSubcommand();
-        await interaction.deferReply({ ephemeral: true });
 
         switch (subcommand) {
-            case 'toggle':
-                data.enabled = !data.enabled;
-                saveGuildData(guildId, data);
-                return interaction.editReply(`✅ Welcome system has been **${data.enabled ? 'enabled' : 'disabled'}**.`);
-            case 'setchannel':
-                const channel = interaction.options.getChannel('channel');
-                data.channelId = channel.id;
-                saveGuildData(guildId, data);
-                return interaction.editReply(`✅ Welcome messages will now be sent to ${channel}.`);
-            case 'setmessage':
-                const message = interaction.options.getString('message');
-                data.message = message;
-                saveGuildData(guildId, data);
-                return interaction.editReply(`✅ Welcome message has been updated.\n**Preview:**\n${message.replace('{user}', interaction.user.toString()).replace('{guild}', interaction.guild.name)}`);
-            case 'setrole':
-                const selectMenu = new RoleSelectMenuBuilder().setCustomId('welcome_role_select').setPlaceholder('Select a role to assign to new members');
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-                return interaction.editReply({ content: 'Please select a role from the menu below. I must have a role higher than the selected role to be able to assign it.', components: [row] });
-            case 'removerole':
-                data.roleId = null;
-                saveGuildData(guildId, data);
-                return interaction.editReply('✅ The autorole for new members has been removed.');
+            case 'setup':
+                await interaction.deferReply({ ephemeral: true });
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
             case 'status':
-                const statusChannel = data.channelId ? `<#${data.channelId}>` : 'Not set';
-                const statusRole = data.roleId ? `<@&${data.roleId}>` : 'Not set';
-                const status = data.enabled ? 'Enabled' : 'Disabled';
-                const { theme } = await globalContext.getGuildSettings(guildId);
-                const embed = globalContext.createThemedEmbed(theme, {
-                    title: 'Welcome System Status',
-                    fields: [
-                        { name: 'Status', value: status, inline: true },
-                        { name: 'Welcome Channel', value: statusChannel, inline: true },
-                        { name: 'Autorole', value: statusRole, inline: true },
-                        { name: 'Message', value: `\`\`\`\n${data.message}\n\`\`\`` }
-                    ]
-                });
-                return interaction.editReply({ embeds: [embed] });
+                await interaction.deferReply({ ephemeral: false }); // Status can be public
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId, false));
         }
     }
 }
