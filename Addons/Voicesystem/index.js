@@ -1,4 +1,4 @@
-const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, UserSelectMenuBuilder, StringSelectMenuBuilder } = require('discord.js');
+const { ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, UserSelectMenuBuilder, StringSelectMenuBuilder, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 let listenersAttached = false;
@@ -285,8 +285,8 @@ function attachListeners(client) {
             const { theme } = await globalContext.getGuildSettings(guildId);
             await updateControlPanel(interaction, theme);
             
-            const voiceRegions = await interaction.guild.fetchVoiceRegions();
-            const regionName = voiceRegions.get(newRegion)?.name ?? 'Automatic';
+            const voiceRegions = await interaction.client.rest.get(Routes.voiceRegions());
+            const regionName = voiceRegions.find(r => r.id === newRegion)?.name ?? 'Automatic';
 
             return interaction.reply({ content: `🌎 Channel region set to **${regionName}**!`, ephemeral: true });
         }
@@ -357,8 +357,8 @@ async function createControlPanelEmbed(channel, owner, theme) {
 
     let regionName = 'Automatic';
     if (state.rtcRegion) {
-        const voiceRegions = await channel.guild.fetchVoiceRegions();
-        regionName = voiceRegions.get(state.rtcRegion)?.name ?? 'Automatic';
+        const voiceRegions = await channel.client.rest.get(Routes.voiceRegions());
+        regionName = voiceRegions.find(r => r.id === state.rtcRegion)?.name ?? 'Automatic';
     }
 
     const description = [
@@ -410,7 +410,7 @@ async function sendControlPanel(channel, member, theme) {
     );
 
     // Row 2: Region Select Menu
-    const voiceRegions = await channel.guild.fetchVoiceRegions();
+    const voiceRegions = await channel.client.rest.get(Routes.voiceRegions());
     const currentRegion = channel.rtcRegion;
 
     const regionOptions = voiceRegions
