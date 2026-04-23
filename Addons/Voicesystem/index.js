@@ -230,28 +230,6 @@ function attachListeners(client) {
                     modal.addComponents(new ActionRowBuilder().addComponents(input));
                     return interaction.showModal(modal).catch(() => {});
                 }
-                case 'vc_region': {
-                    const voiceRegions = await interaction.guild.fetchVoiceRegions();
-                    const currentRegion = channel.rtcRegion;
-
-                    const options = voiceRegions
-                        .filter(region => !region.deprecated)
-                        .map(region => ({
-                            label: region.name,
-                            value: region.id,
-                            description: region.optimal ? 'Optimal' : undefined,
-                            default: region.id === currentRegion,
-                        }));
-
-                    options.unshift({ label: 'Automatic', value: 'auto', description: 'Let Discord choose the best region.', default: !currentRegion });
-
-                    if (options.length === 0) return interaction.followUp({ content: '❌ No voice regions available to select.', ephemeral: true });
-
-                    const selectMenu = new StringSelectMenuBuilder().setCustomId('vc_select_region').setPlaceholder('Select a voice region...').addOptions(options.slice(0, 25));
-                    const row = new ActionRowBuilder().addComponents(selectMenu);
-
-                    return interaction.followUp({ content: 'Please select a new voice region below.', components: [row], ephemeral: true });
-                }
             }
         }
 
@@ -423,29 +401,52 @@ async function updateControlPanel(interaction, theme) {
 async function sendControlPanel(channel, member, theme) {
     const embed = await createControlPanelEmbed(channel, member, theme);
 
+    // Row 1: General Channel Settings
     const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_toggle_lock').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary).setEmoji('🔒'),
-        new ButtonBuilder().setCustomId('vc_toggle_visibility').setLabel('Hide/Unhide').setStyle(ButtonStyle.Secondary).setEmoji('👁️'),
-        new ButtonBuilder().setCustomId('vc_rename').setLabel('Rename').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('vc_rename').setLabel('Rename').setStyle(ButtonStyle.Primary).setEmoji('✏️'),
+        new ButtonBuilder().setCustomId('vc_limit').setLabel('Limit').setStyle(ButtonStyle.Primary).setEmoji('👥'),
+        new ButtonBuilder().setCustomId('vc_bitrate').setLabel('Bitrate').setStyle(ButtonStyle.Primary).setEmoji('📶'),
+        new ButtonBuilder().setCustomId('vc_toggle_stream').setLabel('Streaming').setStyle(ButtonStyle.Secondary).setEmoji('📹')
     );
+
+    // Row 2: Region Select Menu
+    const voiceRegions = await channel.guild.fetchVoiceRegions();
+    const currentRegion = channel.rtcRegion;
+
+    const regionOptions = voiceRegions
+        .filter(region => !region.deprecated)
+        .map(region => ({
+            label: region.name,
+            value: region.id,
+            description: region.optimal ? 'Optimal' : undefined,
+            default: region.id === currentRegion,
+        }));
+
+    regionOptions.unshift({ label: 'Automatic', value: 'auto', description: 'Let Discord choose the best region.', default: !currentRegion });
+
+    const regionSelectMenu = new StringSelectMenuBuilder()
+        .setCustomId('vc_select_region')
+        .setPlaceholder('Select a Voice Region')
+        .addOptions(regionOptions.slice(0, 25));
 
     const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_limit').setLabel('User Limit').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('vc_bitrate').setLabel('Bitrate').setStyle(ButtonStyle.Primary).setEmoji('📶'),
-        new ButtonBuilder().setCustomId('vc_toggle_stream').setLabel('Streaming').setStyle(ButtonStyle.Secondary).setEmoji('📹'),
-        new ButtonBuilder().setCustomId('vc_region').setLabel('Region').setStyle(ButtonStyle.Primary).setEmoji('🌎')
+        regionSelectMenu
     );
 
+    // Row 3: Access & User Management
     const row3 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_kick').setLabel('Kick').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('vc_permit').setLabel('Permit').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('vc_reject').setLabel('Reject').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId('vc_transfer').setLabel('Transfer').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('vc_toggle_lock').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary).setEmoji('🔒'),
+        new ButtonBuilder().setCustomId('vc_toggle_visibility').setLabel('Hide/Unhide').setStyle(ButtonStyle.Secondary).setEmoji('👁️'),
+        new ButtonBuilder().setCustomId('vc_kick').setLabel('Kick').setStyle(ButtonStyle.Danger).setEmoji('👢'),
+        new ButtonBuilder().setCustomId('vc_permit').setLabel('Permit').setStyle(ButtonStyle.Success).setEmoji('✅'),
+        new ButtonBuilder().setCustomId('vc_reject').setLabel('Reject').setStyle(ButtonStyle.Danger).setEmoji('🚫')
     );
 
+    // Row 4: Ownership & Danger Zone
     const row4 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('vc_claim').setLabel('Claim Ownership').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('vc_delete').setLabel('Disband Channel').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
+        new ButtonBuilder().setCustomId('vc_transfer').setLabel('Transfer').setStyle(ButtonStyle.Primary).setEmoji('👑'),
+        new ButtonBuilder().setCustomId('vc_claim').setLabel('Claim').setStyle(ButtonStyle.Success).setEmoji('🙌'),
+        new ButtonBuilder().setCustomId('vc_delete').setLabel('Disband').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
     );
 
     try {
