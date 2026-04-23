@@ -1,0 +1,7 @@
+{
+    "name": "Welcome-System",
+    "description": "Greets new members with a customizable message and can assign a role upon joining.",
+    "type": "feature",
+    "folder": "Welcome System"
+}
+
