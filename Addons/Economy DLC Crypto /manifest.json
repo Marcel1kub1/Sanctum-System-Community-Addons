@@ -1,0 +1,7 @@
+{
+    "name": "Economy DLC - Crypto",
+    "description": "Adds a crypto mining rig to the shop and a !mine command.",
+    "type": "economy-dlc",
+    "folder": "Economy DLC - Crypto"
+}
+
