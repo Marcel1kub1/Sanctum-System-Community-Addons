@@ -13,21 +13,39 @@ async function executeMineCommand(context) {
     const lastUsed = mineCooldowns.get(userId);
     if (lastUsed && (Date.now() - lastUsed) < cooldownTime) {
         const remaining = Math.ceil((cooldownTime - (Date.now() - lastUsed)) / 60000);
-        return message.reply(`⏳ Your mining rigs are cooling down. You can mine again in **${remaining} minute(s)**.`);
+        return message.reply(`⏳ Your crypto assets are cooling down. You can mine again in **${remaining} minute(s)**.`);
     }
 
-    // Check if the user owns any crypto rigs
-    const [rigs] = await db.query('SELECT quantity FROM user_businesses WHERE user_id = ? AND biz_id = ?', [userId, 'crypto_rig_1']);
-    const rigCount = rigs.length > 0 ? rigs[0].quantity : 0;
+    // Get all crypto items defined in this addon
+    const cryptoItems = module.exports.economyExtensions.shopItems;
+    const cryptoItemIds = cryptoItems.map(item => item.id);
 
-    if (rigCount === 0) {
-        return message.reply("❌ You don't own any Crypto Mining Rigs. Buy them from the `!shop` to start mining!");
+    // Check if the user owns any crypto assets
+    const [ownedAssets] = await db.query('SELECT biz_id, quantity FROM user_businesses WHERE user_id = ? AND biz_id IN (?)', [userId, [cryptoItemIds]]);
+
+    if (ownedAssets.length === 0) {
+        return message.reply("❌ You don't own any crypto assets. Buy a 'Mining Rig Tier 1' from the `!shop` to start mining!");
     }
 
-    // Calculate earnings
-    const baseGainPerRig = 150; // Base earning per rig
-    const randomFactor = Math.random() * 50; // A bit of randomness
-    const totalGain = Math.floor((baseGainPerRig + randomFactor) * rigCount);
+    // Calculate total mining power
+    let totalMiningPower = 0;
+    let ownedAssetSummary = [];
+    for (const asset of ownedAssets) {
+        const itemDetails = cryptoItems.find(i => i.id === asset.biz_id);
+        if (itemDetails && itemDetails.miningPower) {
+            totalMiningPower += itemDetails.miningPower * asset.quantity;
+            ownedAssetSummary.push(`- ${asset.quantity}x ${itemDetails.name}`);
+        }
+    }
+
+    if (totalMiningPower === 0) {
+        return message.reply("❌ You don't own any crypto assets that can be used for mining. Buy them from the `!shop`!");
+    }
+
+    // Calculate earnings based on total mining power
+    const baseGainPerPower = 150; // Base earning per mining power point
+    const randomFactor = Math.random() * 50; // A bit of randomness for variety
+    const totalGain = Math.floor((baseGainPerPower * totalMiningPower) + (randomFactor * totalMiningPower));
 
     // Update user's balance
     await db.query('UPDATE users SET balance = balance + ? WHERE user_id = ?', [totalGain, userId]);
@@ -38,9 +56,11 @@ async function executeMineCommand(context) {
     // Send confirmation message
     const embed = createThemedEmbed(guildCfg.theme, {
         title: '⛏️ Crypto Mining Operation',
-        description: `Your **${rigCount}** mining rig(s) successfully mined some crypto!`,
+        description: `Your crypto empire whirs to life, generating a new block!`,
         fields: [
-            { name: '💰 Earnings', value: `$${totalGain.toLocaleString()}`, inline: true }
+            { name: '💰 Earnings', value: `$${totalGain.toLocaleString()}`, inline: true },
+            { name: '⚡ Mining Power', value: `${totalMiningPower} TH/s`, inline: true },
+            { name: 'Active Assets', value: ownedAssetSummary.join('\n'), inline: false }
         ],
         thumbnail: { url: 'https://i.imgur.com/tH33G9A.png' }, // A crypto-like icon
         timestamp: true,
@@ -50,17 +70,49 @@ async function executeMineCommand(context) {
     return message.reply({ embeds: [embed] });
 }
 
+/**
+ * Generates the full list of upgradable crypto items.
+ * @returns {Array<object>} A list of shop item objects.
+ */
+function generateCryptoItems() {
+    const items = [];
+    const maxLevel = 100;
+
+    const nameTiers = [
+        { level: 100, name: "Singularity Core" },
+        { level: 76, name: "Quantum Node" },
+        { level: 51, name: "Supercomputer" },
+        { level: 26, name: "Data Center" },
+        { level: 11, name: "Mining Farm" },
+        { level: 1, name: "Mining Rig" },
+    ];
+
+    for (let i = 1; i <= maxLevel; i++) {
+        // Determine the name based on tier, finding the highest tier below or equal to current level
+        const currentNameTier = nameTiers.find(t => i >= t.level);
+        const name = currentNameTier.name;
+
+        // Scalable pricing, income, and mining power.
+        // Using an exponential curve to make high-end items very expensive.
+        const price = Math.floor(Math.pow(i, 2.5) * 1000 + (i * 5000));
+        const income = Math.floor(price * 0.045); // Passive income per hour
+        const miningPower = i; // Active income from !mine command scales linearly with tier
+
+        items.push({
+            id: `crypto_${i}`,
+            name: `${name} Tier ${i}`,
+            price: price,
+            income: income,
+            miningPower: miningPower
+        });
+    }
+    return items;
+}
+
 module.exports = {
     // This addon doesn't need an initialize function, it just provides extensions.
     economyExtensions: {
-        shopItems: [
-            {
-                id: 'crypto_rig_1',
-                name: 'Crypto Mining Rig',
-                price: 75000,
-                income: 120 // This is the passive income per hour
-            }
-        ],
+        shopItems: generateCryptoItems(),
         commands: [
             {
                 name: 'mine',
@@ -70,4 +122,3 @@ module.exports = {
         ]
     }
 };
-
