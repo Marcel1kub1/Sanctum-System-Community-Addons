@@ -214,6 +214,14 @@ async function welcomeSystemInteractionCreate(interaction) {
 
     // --- Setup Dashboard Button Handlers ---
     if (interaction.isButton()) {
+        // Modals are a reply on their own and cannot be deferred.
+        if (interaction.customId === 'welcome_setup_message') {
+            const modal = new ModalBuilder().setCustomId('welcome_setup_message_modal').setTitle('Set Welcome Message');
+            const messageInput = new TextInputBuilder().setCustomId('message_input').setLabel("Welcome Message").setPlaceholder('Use {user} for user mention and {guild} for server name.').setStyle(TextInputStyle.Paragraph).setValue(data.message);
+            modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+            return interaction.showModal(modal);
+        }
+
         await interaction.deferUpdate();
         switch (interaction.customId) {
             case 'welcome_setup_toggle':
@@ -224,11 +232,6 @@ async function welcomeSystemInteractionCreate(interaction) {
                 const channelMenu = new ChannelSelectMenuBuilder().setCustomId('welcome_setup_channel_select').setPlaceholder('Select a channel for welcome messages').setChannelTypes([ChannelType.GuildText]);
                 const channelRow = new ActionRowBuilder().addComponents(channelMenu);
                 return interaction.editReply({ content: 'Please select a channel from the menu below.', components: [channelRow], embeds: [] });
-            case 'welcome_setup_message':
-                const modal = new ModalBuilder().setCustomId('welcome_setup_message_modal').setTitle('Set Welcome Message');
-                const messageInput = new TextInputBuilder().setCustomId('message_input').setLabel("Welcome Message").setPlaceholder('Use {user} for user mention and {guild} for server name.').setStyle(TextInputStyle.Paragraph).setValue(data.message);
-                modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
-                return interaction.showModal(modal);
             case 'welcome_setup_role':
                 const roleMenu = new RoleSelectMenuBuilder().setCustomId('welcome_setup_role_select').setPlaceholder('Select a role to assign to new members');
                 const roleRow = new ActionRowBuilder().addComponents(roleMenu);
