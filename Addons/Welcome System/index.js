@@ -64,28 +64,38 @@ function initialize(client, guildId, context) {
     if (!client.listeners(Events.InteractionCreate).find(l => l.name === 'welcomeSystemInteractionCreate')) {
         client.on(Events.InteractionCreate, welcomeSystemInteractionCreate);
     }
-
-    // Register the setup command.
-    const registerCommand = () => {
-        client.application?.commands.create({
-            name: 'welcome',
-            description: 'Configure the welcome system for this server.',
-            defaultMemberPermissions: PermissionFlagsBits.Administrator,
-                options: [
-                    { name: 'setup', description: 'Run the interactive setup for the welcome system.', type: 1 /* SUB_COMMAND */ },
-                    { name: 'status', description: 'View the current welcome system configuration.', type: 1 /* SUB_COMMAND */ }
-                ]
-        }).catch(console.error);
-    };
-
-    if (client.isReady()) {
-        registerCommand();
-    } else {
-        client.once(Events.ClientReady, registerCommand);
+    // Add a message listener for the prefix command
+    if (!client.listeners(Events.MessageCreate).find(l => l.name === 'welcomeSystemMessageCreate')) {
+        client.on(Events.MessageCreate, welcomeSystemMessageCreate);
     }
 }
 
 // --- Event Handlers ---
+
+/**
+ * Handles the MessageCreate event to process the !welcome command.
+ * @param {import('discord.js').Message} message The message object.
+ */
+async function welcomeSystemMessageCreate(message) {
+    if (message.author.bot || !message.inGuild()) return;
+
+    const prefix = '!'; // Using a fixed prefix as requested.
+
+    if (!message.content.startsWith(prefix)) return;
+
+    const args = message.content.slice(prefix.length).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+
+    if (command === 'welcome') {
+        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            return message.reply({ content: '❌ You need Administrator permissions to use this command.' }).catch(console.error);
+        }
+
+        // Show the interactive setup dashboard.
+        const payload = await createWelcomeDashboardPayload(message.guild.id);
+        await message.reply({ embeds: payload.embeds, components: payload.components }).catch(console.error);
+    }
+}
 
 /**
  * Handles the GuildMemberAdd event to welcome new users.
@@ -133,10 +143,9 @@ async function welcomeSystemGuildMemberAdd(member) {
 /**
  * Creates the payload for the welcome system dashboard (embeds and components).
  * @param {string} guildId The ID of the guild.
- * @param {boolean} isSetup If true, includes configuration buttons.
  * @returns {Promise<object>} The payload for a message reply/update.
  */
-async function createWelcomeDashboardPayload(guildId, isSetup = false) {
+async function createWelcomeDashboardPayload(guildId) {
     const data = getGuildData(guildId);
     const { theme } = await globalContext.getGuildSettings(guildId);
 
@@ -145,8 +154,8 @@ async function createWelcomeDashboardPayload(guildId, isSetup = false) {
     const status = data.enabled ? 'Enabled' : 'Disabled';
 
     const embed = globalContext.createThemedEmbed(theme, {
-        title: isSetup ? 'Welcome System Setup' : 'Welcome System Status',
-        description: isSetup ? 'Use the buttons below to configure the welcome system.' : null,
+        title: 'Welcome System Setup',
+        description: 'Use the buttons below to configure the welcome system.',
         fields: [
             { name: 'Status', value: status, inline: true },
             { name: 'Welcome Channel', value: statusChannel, inline: true },
@@ -154,10 +163,6 @@ async function createWelcomeDashboardPayload(guildId, isSetup = false) {
             { name: 'Message', value: `\`\`\`\n${data.message}\n\`\`\`` }
         ]
     });
-
-    if (!isSetup) {
-        return { embeds: [embed], components: [] };
-    }
 
     const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -197,7 +202,6 @@ async function welcomeSystemInteractionCreate(interaction) {
     if (!interaction.inGuild()) return;
 
     const isWelcomeInteraction = (
-        (interaction.isChatInputCommand() && interaction.commandName === 'welcome') ||
         (interaction.isButton() && interaction.customId.startsWith('welcome_setup_')) ||
         (interaction.isRoleSelectMenu() && interaction.customId === 'welcome_setup_role_select') ||
         (interaction.isChannelSelectMenu() && interaction.customId === 'welcome_setup_channel_select') ||
@@ -215,7 +219,7 @@ async function welcomeSystemInteractionCreate(interaction) {
             case 'welcome_setup_toggle':
                 data.enabled = !data.enabled;
                 saveGuildData(guildId, data);
-                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId));
             case 'welcome_setup_channel':
                 const channelMenu = new ChannelSelectMenuBuilder().setCustomId('welcome_setup_channel_select').setPlaceholder('Select a channel for welcome messages').setChannelTypes([ChannelType.GuildText]);
                 const channelRow = new ActionRowBuilder().addComponents(channelMenu);
@@ -232,7 +236,7 @@ async function welcomeSystemInteractionCreate(interaction) {
             case 'welcome_setup_removerole':
                 data.roleId = null;
                 saveGuildData(guildId, data);
-                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+                return interaction.editReply(await createWelcomeDashboardPayload(guildId));
         }
     }
 
@@ -241,7 +245,7 @@ async function welcomeSystemInteractionCreate(interaction) {
         await interaction.deferUpdate();
         data.channelId = interaction.values[0];
         saveGuildData(guildId, data);
-        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId));
     }
 
     if (interaction.isRoleSelectMenu()) {
@@ -250,42 +254,24 @@ async function welcomeSystemInteractionCreate(interaction) {
         const role = await interaction.guild.roles.fetch(roleId);
 
         if (!role) {
-            await interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+            await interaction.editReply(await createWelcomeDashboardPayload(guildId));
             return interaction.followUp({ content: '❌ This role no longer exists.', ephemeral: true });
         }
         if (role.managed || role.position >= interaction.guild.members.me.roles.highest.position) {
-            await interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+            await interaction.editReply(await createWelcomeDashboardPayload(guildId));
             return interaction.followUp({ content: '❌ I cannot assign this role. It is managed by an integration or is higher than my highest role.', ephemeral: true });
         }
 
         data.roleId = roleId;
         saveGuildData(guildId, data);
-        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId));
     }
 
     if (interaction.isModalSubmit()) {
         await interaction.deferUpdate();
         data.message = interaction.fields.getTextInputValue('message_input');
         saveGuildData(guildId, data);
-        return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
-    }
-
-    // --- Slash Command Handler ---
-    if (interaction.isChatInputCommand()) {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            return interaction.reply({ content: '❌ You need Administrator permissions to use this command.', ephemeral: true });
-        }
-
-        const subcommand = interaction.options.getSubcommand();
-
-        switch (subcommand) {
-            case 'setup':
-                await interaction.deferReply({ ephemeral: true });
-                return interaction.editReply(await createWelcomeDashboardPayload(guildId, true));
-            case 'status':
-                await interaction.deferReply({ ephemeral: false }); // Status can be public
-                return interaction.editReply(await createWelcomeDashboardPayload(guildId, false));
-        }
+        return interaction.editReply(await createWelcomeDashboardPayload(guildId));
     }
 }
 
