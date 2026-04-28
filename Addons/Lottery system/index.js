@@ -172,7 +172,7 @@ async function drawWinner(lotteryType, context) {
  * @param {object} context The command context from the command handler.
  */
 async function handleLotterySend(context) {
-    const { message, db, isStaff } = context;
+    const { message, isStaff } = context;
 
     if (!isStaff) {
         return message.reply('❌ You must be a staff member to use this command.');
@@ -317,7 +317,6 @@ module.exports = {
         async onInteraction(interaction, context) {
             if (!interaction.isButton() || !interaction.customId.startsWith('lottery_buy_')) return;
 
-            const { db } = context;
             const userId = interaction.user.id;
             const lotteryType = interaction.customId.replace('lottery_buy_', '');
             
