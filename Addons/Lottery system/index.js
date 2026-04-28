@@ -1,8 +1,6 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const cron = require('node-cron');
 
-let mainDbConnection = null; // To store the main DB connection once required
-let _getGuildSettings = null; // To store the getGuildSettings function
 // In-memory store for lottery state. For persistence across restarts, this is loaded from and saved to a database.
 const lotteryState = {
     money: { messageId: null, channelId: null, winner: null, jackpot: 'A random prize between **$1,000,000** and **$10,000,000**!' },
@@ -173,33 +171,23 @@ async function drawWinner(lotteryType, context) {
  * @param {object} context The command context from the command handler.
  */
 async function handleLotterySend(context) {
-    const { message, isStaff } = context;
+    const { message, isStaff, getDbByGuild, getGuildSettings } = context;
 
     if (!isStaff) {
         return message.reply('❌ You must be a staff member to use this command.');
     }
 
     await message.reply({ content: '🔄 Resetting lotteries and sending new panels...' });
-    
-    // Reconstruct fullContext for updatePanel calls within this command
-    let db;
-    if (typeof context.getDbByGuild === 'function') {
-        db = await context.getDbByGuild(message.guild.id);
-    }
-    // Fallback to mainDbConnection if getDbByGuild didn't provide one
-    if (!db && mainDbConnection) {
-        db = mainDbConnection;
-        console.warn(`[Lottery] context.getDbByGuild did not return a DB connection for guild ${message.guild.id}. Falling back to mainDb.`);
-    }
-    if (!db) {
-        console.error(`[Lottery] No database connection available for guild ${message.guild.id}. Cannot process command.`);
-        return message.channel.send('❌ An internal error occurred: database connection unavailable.');
-    }
 
-    const getGuildSettings = context.getGuildSettings || _getGuildSettings;
     if (typeof getGuildSettings !== 'function') {
         console.error('[Lottery] getGuildSettings function is not available. Cannot process command.');
         return message.channel.send('❌ An internal error occurred: configuration function unavailable.');
+    }
+
+    const db = await getDbByGuild(message.guild.id);
+    if (!db) {
+        console.error(`[Lottery] No database connection available for guild ${message.guild.id}. Cannot process command.`);
+        return message.channel.send('❌ An internal error occurred: database connection unavailable.');
     }
 
     const guildCfg = await getGuildSettings(message.guild.id);
@@ -207,8 +195,7 @@ async function handleLotterySend(context) {
         ...context, // Includes getDbByGuild, createThemedEmbed
         client: message.client, // Get client from the message object
         db,
-        guildCfg,
-        getGuildSettings // Pass the resolved function
+        guildCfg
     };
 
     console.log(`Manual lottery panel send triggered by staff: ${message.author.tag}`);
@@ -236,35 +223,14 @@ module.exports = {
     description: "Weekly lotteries for money, levels, and businesses.",
 
     async initialize(client, guildId, context) {
-        // Capture the getGuildSettings function from the context provided at initialization.
-        if (!_getGuildSettings && typeof context.getGuildSettings === 'function') {
-            _getGuildSettings = context.getGuildSettings;
-        }
-
         if (initialized) {
             return; // Prevent re-initialization and multiple cron jobs
         }
         initialized = true;
 
-        // The context from AddonManager is now expected to contain the `db` connection.
-        // Ensure mainDbConnection is loaded once for fallback
-        if (!mainDbConnection) {
-            try {
-                // Path from addons/Lottery system/index.js to Database/connection.js
-                mainDbConnection = require('../../Database/connection').mainDb;
-            } catch (e) {
-                console.error("[Lottery] Failed to load mainDb connection directly:", e);
-            }
-        }
+        const { getDbByGuild, getGuildSettings } = context;
+        const db = await getDbByGuild(guildId);
 
-        let db;
-        if (typeof context.getDbByGuild === 'function') {
-            db = await context.getDbByGuild(guildId);
-        }
-        if (!db && mainDbConnection) {
-            db = mainDbConnection;
-            console.warn(`[Lottery] context.getDbByGuild did not return a DB connection for guild ${guildId}. Falling back to mainDb.`);
-        }
         if (!db) {
             console.error(`[Lottery] No database connection available for guild ${guildId}. Addon cannot function.`);
             initialized = false; // Allow re-initialization attempt later
@@ -272,12 +238,12 @@ module.exports = {
         }
 
         // We build a more complete context object for the addon's functions to use.
-        const guildCfg = await context.getGuildSettings(guildId); // Get guild settings
+        const guildCfg = await getGuildSettings(guildId); // Get guild settings
         const fullContext = {
             ...context,
             client,
             db, // Add the obtained db connection to the fullContext
-            guildCfg: await context.getGuildSettings(guildId)
+            guildCfg
         };
 
         console.log("Initializing Lottery Addon...");
@@ -334,29 +300,23 @@ module.exports = {
 
             const userId = interaction.user.id;
             const lotteryType = interaction.customId.replace('lottery_buy_', '');
-            
-            let db;
-            if (typeof context.getDbByGuild === 'function') {
-                db = await context.getDbByGuild(interaction.guild.id);
+
+            const { getDbByGuild, getGuildSettings } = context;
+
+            if (typeof getDbByGuild !== 'function' || typeof getGuildSettings !== 'function') {
+                console.error('[Lottery] Incomplete context for interaction. Missing getDbByGuild or getGuildSettings.');
+                return interaction.editReply({ content: '❌ An internal error occurred: context is incomplete.' });
             }
-            if (!db && mainDbConnection) {
-                db = mainDbConnection;
-                console.warn(`[Lottery] context.getDbByGuild did not return a DB connection for guild ${interaction.guild.id}. Falling back to mainDb.`);
-            }
+
+            const db = await getDbByGuild(interaction.guild.id);
             if (!db) {
                 console.error(`[Lottery] No database connection available for guild ${interaction.guild.id}. Cannot process interaction.`);
                 return interaction.editReply({ content: '❌ An internal error occurred: database connection unavailable.' });
             }
 
-            const getGuildSettings = context.getGuildSettings || _getGuildSettings;
-            if (typeof getGuildSettings !== 'function') {
-                console.error('[Lottery] Unable to resolve getGuildSettings function. The lottery interaction cannot proceed.');
-                return interaction.editReply({ content: '❌ An internal error occurred: configuration loader is missing.' });
-            }
-
             // Reconstruct fullContext for updatePanel call
             const guildCfg = await getGuildSettings(interaction.guild.id);
-            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg, getGuildSettings };
+            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg };
 
             const [[user]] = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
 
