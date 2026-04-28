@@ -2,6 +2,7 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const cron = require('node-cron');
 
 let mainDbConnection = null; // To store the main DB connection once required
+let _getGuildSettings = null; // To store the getGuildSettings function
 // In-memory store for lottery state. For persistence across restarts, this is loaded from and saved to a database.
 const lotteryState = {
     money: { messageId: null, channelId: null, winner: null, jackpot: 'A random prize between **$1,000,000** and **$10,000,000**!' },
@@ -195,12 +196,19 @@ async function handleLotterySend(context) {
         return message.channel.send('❌ An internal error occurred: database connection unavailable.');
     }
 
-    const guildCfg = await context.getGuildSettings(message.guild.id);
+    const getGuildSettings = context.getGuildSettings || _getGuildSettings;
+    if (typeof getGuildSettings !== 'function') {
+        console.error('[Lottery] getGuildSettings function is not available. Cannot process command.');
+        return message.channel.send('❌ An internal error occurred: configuration function unavailable.');
+    }
+
+    const guildCfg = await getGuildSettings(message.guild.id);
     const fullContextForCommand = { // This was `fullContextForCommand`
-        ...context, // Includes getDbByGuild, createThemedEmbed, getGuildSettings
+        ...context, // Includes getDbByGuild, createThemedEmbed
         client: message.client, // Get client from the message object
         db,
-        guildCfg
+        guildCfg,
+        getGuildSettings // Pass the resolved function
     };
 
     console.log(`Manual lottery panel send triggered by staff: ${message.author.tag}`);
@@ -228,6 +236,11 @@ module.exports = {
     description: "Weekly lotteries for money, levels, and businesses.",
 
     async initialize(client, guildId, context) {
+        // Capture the getGuildSettings function from the context provided at initialization.
+        if (!_getGuildSettings && typeof context.getGuildSettings === 'function') {
+            _getGuildSettings = context.getGuildSettings;
+        }
+
         if (initialized) {
             return; // Prevent re-initialization and multiple cron jobs
         }
@@ -317,6 +330,8 @@ module.exports = {
         async onInteraction(interaction, context) {
             if (!interaction.isButton() || !interaction.customId.startsWith('lottery_buy_')) return;
 
+            await interaction.deferReply({ ephemeral: true });
+
             const userId = interaction.user.id;
             const lotteryType = interaction.customId.replace('lottery_buy_', '');
             
@@ -330,15 +345,18 @@ module.exports = {
             }
             if (!db) {
                 console.error(`[Lottery] No database connection available for guild ${interaction.guild.id}. Cannot process interaction.`);
-                return interaction.editReply({ content: '❌ An internal error occurred: database connection unavailable.', ephemeral: true });
+                return interaction.editReply({ content: '❌ An internal error occurred: database connection unavailable.' });
+            }
+
+            const getGuildSettings = context.getGuildSettings || _getGuildSettings;
+            if (typeof getGuildSettings !== 'function') {
+                console.error('[Lottery] Unable to resolve getGuildSettings function. The lottery interaction cannot proceed.');
+                return interaction.editReply({ content: '❌ An internal error occurred: configuration loader is missing.' });
             }
 
             // Reconstruct fullContext for updatePanel call
-            const guildCfg = await context.getGuildSettings(interaction.guild.id);
-            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg };
-
-
-            await interaction.deferReply({ ephemeral: true });
+            const guildCfg = await getGuildSettings(interaction.guild.id);
+            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg, getGuildSettings };
 
             const [[user]] = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
 
