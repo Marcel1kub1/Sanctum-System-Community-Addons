@@ -197,12 +197,27 @@ async function handleLotterySend(context) {
     return message.channel.send('✅ New lottery panels have been sent successfully.');
 }
 
+let initialized = false;
+
 module.exports = {
     name: "Lottery",
     description: "Weekly lotteries for money, levels, and businesses.",
 
-    async initialize(context) {
-        const { db, client } = context;
+    async initialize(client, guildId, context) {
+        if (initialized) {
+            return; // Prevent re-initialization and multiple cron jobs
+        }
+        initialized = true;
+
+        // The context from AddonManager is now expected to contain the `db` connection.
+        // We build a more complete context object for the addon's functions to use.
+        const fullContext = {
+            ...context,
+            client,
+            guildCfg: await context.getGuildSettings(guildId)
+        };
+
+        const { db } = fullContext;
         console.log("Initializing Lottery Addon...");
 
         // It's recommended to create these tables in your database manually.
@@ -226,7 +241,7 @@ module.exports = {
             }
             await db.query('DELETE FROM lottery_tickets');
             for (const type of ['money', 'level', 'business']) {
-                await updatePanel(type, context, true);
+                await updatePanel(type, fullContext, true);
             }
         }, { scheduled: true, timezone: "Europe/Germany" });
 
@@ -234,10 +249,10 @@ module.exports = {
         cron.schedule('0 20 * * 5', async () => {
             console.log("Running Friday lottery drawing...");
             for (const type of ['money', 'level', 'business']) {
-                await drawWinner(type, context);
-                await updatePanel(type, context);
+                await drawWinner(type, fullContext);
+                await updatePanel(type, fullContext);
             }
-        }, { scheduled: true, timezone: "Europe/London" });
+        }, { scheduled: true, timezone: "Europe/Germany" });
 
         console.log("Lottery Addon initialized with cron jobs.");
     },
