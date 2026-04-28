@@ -1,9 +1,6 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const cron = require('node-cron');
 
-// Store a reference to the getGuildSettings function from a complete context
-let _getGuildSettings = null;
-
 // In-memory store for lottery state. For persistence across restarts, this is loaded from and saved to a database.
 const lotteryState = {
     money: { messageId: null, channelId: null, winner: null, jackpot: 'A random prize between **$1,000,000** and **$10,000,000**!' },
@@ -174,8 +171,7 @@ async function drawWinner(lotteryType, context) {
  * @param {object} context The command context from the command handler.
  */
 async function handleLotterySend(context) {
-    const { message, isStaff, getDbByGuild } = context;
-    const getGuildSettings = context.getGuildSettings || _getGuildSettings;
+    const { message, isStaff, getDbByGuild, getGuildSettings } = context;
 
     if (!isStaff) {
         return message.reply('❌ You must be a staff member to use this command.');
@@ -183,15 +179,14 @@ async function handleLotterySend(context) {
 
     await message.reply({ content: '🔄 Resetting lotteries and sending new panels...' });
 
-    if (typeof getGuildSettings !== 'function') {
-        console.error('[Lottery] getGuildSettings function is not available. Cannot process command.');
-        return message.channel.send('❌ An internal error occurred: The configuration loader is not available.');
-    }
+    // At this point, getDbByGuild and getGuildSettings should always be functions
+    // due to the fix in Bot/commands.js
+    // No need for fallback or type checks here, as the context is guaranteed to be complete.
 
     const db = await getDbByGuild(message.guild.id);
     if (!db) {
         console.error(`[Lottery] No database connection available for guild ${message.guild.id}. Cannot process command.`);
-        return message.channel.send('❌ An internal error occurred: database connection unavailable.');
+        return message.channel.send('❌ An internal error occurred: Database connection unavailable.');
     }
 
     const guildCfg = await getGuildSettings(message.guild.id);
@@ -228,11 +223,6 @@ module.exports = {
     description: "Weekly lotteries for money, levels, and businesses.",
 
     async initialize(client, guildId, context) {
-        // Capture the getGuildSettings function from the context provided at initialization.
-        if (!_getGuildSettings && typeof context.getGuildSettings === 'function') {
-            _getGuildSettings = context.getGuildSettings;
-        }
-
         if (initialized) {
             return; // Prevent re-initialization and multiple cron jobs
         }
@@ -311,14 +301,10 @@ module.exports = {
             const userId = interaction.user.id;
             const lotteryType = interaction.customId.replace('lottery_buy_', '');
 
-            const { getDbByGuild } = context;
-            const getGuildSettings = context.getGuildSettings || _getGuildSettings;
-
-            if (typeof getDbByGuild !== 'function' || typeof getGuildSettings !== 'function') {
-                console.error('[Lottery] Incomplete context for interaction. Missing getDbByGuild or getGuildSettings.');
-                return interaction.editReply({ content: '❌ An internal error occurred: The context for this interaction is incomplete.' });
-            }
-
+            // At this point, getDbByGuild and getGuildSettings should always be functions
+            // due to the fix in Bot/commands.js
+            // No need for fallback or type checks here, as the context is guaranteed to be complete.
+            const { getDbByGuild, getGuildSettings } = context;
             const db = await getDbByGuild(interaction.guild.id);
             if (!db) {
                 console.error(`[Lottery] No database connection available for guild ${interaction.guild.id}. Cannot process interaction.`);
@@ -327,7 +313,7 @@ module.exports = {
 
             // Reconstruct fullContext for updatePanel call
             const guildCfg = await getGuildSettings(interaction.guild.id);
-            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg, getGuildSettings };
+            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg, getDbByGuild, getGuildSettings };
 
             const [[user]] = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
 
