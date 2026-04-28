@@ -1,6 +1,9 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const cron = require('node-cron');
 
+// Store a reference to the getGuildSettings function from a complete context
+let _getGuildSettings = null;
+
 // In-memory store for lottery state. For persistence across restarts, this is loaded from and saved to a database.
 const lotteryState = {
     money: { messageId: null, channelId: null, winner: null, jackpot: 'A random prize between **$1,000,000** and **$10,000,000**!' },
@@ -171,7 +174,8 @@ async function drawWinner(lotteryType, context) {
  * @param {object} context The command context from the command handler.
  */
 async function handleLotterySend(context) {
-    const { message, isStaff, getDbByGuild, getGuildSettings } = context;
+    const { message, isStaff, getDbByGuild } = context;
+    const getGuildSettings = context.getGuildSettings || _getGuildSettings;
 
     if (!isStaff) {
         return message.reply('❌ You must be a staff member to use this command.');
@@ -181,7 +185,7 @@ async function handleLotterySend(context) {
 
     if (typeof getGuildSettings !== 'function') {
         console.error('[Lottery] getGuildSettings function is not available. Cannot process command.');
-        return message.channel.send('❌ An internal error occurred: configuration function unavailable.');
+        return message.channel.send('❌ An internal error occurred: The configuration loader is not available.');
     }
 
     const db = await getDbByGuild(message.guild.id);
@@ -191,11 +195,12 @@ async function handleLotterySend(context) {
     }
 
     const guildCfg = await getGuildSettings(message.guild.id);
-    const fullContextForCommand = { // This was `fullContextForCommand`
+    const fullContextForCommand = {
         ...context, // Includes getDbByGuild, createThemedEmbed
         client: message.client, // Get client from the message object
         db,
-        guildCfg
+        guildCfg,
+        getGuildSettings // Pass the resolved function
     };
 
     console.log(`Manual lottery panel send triggered by staff: ${message.author.tag}`);
@@ -223,6 +228,11 @@ module.exports = {
     description: "Weekly lotteries for money, levels, and businesses.",
 
     async initialize(client, guildId, context) {
+        // Capture the getGuildSettings function from the context provided at initialization.
+        if (!_getGuildSettings && typeof context.getGuildSettings === 'function') {
+            _getGuildSettings = context.getGuildSettings;
+        }
+
         if (initialized) {
             return; // Prevent re-initialization and multiple cron jobs
         }
@@ -301,11 +311,12 @@ module.exports = {
             const userId = interaction.user.id;
             const lotteryType = interaction.customId.replace('lottery_buy_', '');
 
-            const { getDbByGuild, getGuildSettings } = context;
+            const { getDbByGuild } = context;
+            const getGuildSettings = context.getGuildSettings || _getGuildSettings;
 
             if (typeof getDbByGuild !== 'function' || typeof getGuildSettings !== 'function') {
                 console.error('[Lottery] Incomplete context for interaction. Missing getDbByGuild or getGuildSettings.');
-                return interaction.editReply({ content: '❌ An internal error occurred: context is incomplete.' });
+                return interaction.editReply({ content: '❌ An internal error occurred: The context for this interaction is incomplete.' });
             }
 
             const db = await getDbByGuild(interaction.guild.id);
@@ -316,7 +327,7 @@ module.exports = {
 
             // Reconstruct fullContext for updatePanel call
             const guildCfg = await getGuildSettings(interaction.guild.id);
-            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg };
+            const interactionFullContext = { ...context, client: interaction.client, db, guildCfg, getGuildSettings };
 
             const [[user]] = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
 
