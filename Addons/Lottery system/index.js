@@ -292,7 +292,7 @@ module.exports = {
             for (const type of ['money', 'level', 'business']) {
                 await updatePanel(type, fullContext, true);
             }
-        }, { scheduled: true, timezone: "Europe/Germany" });
+        }, { scheduled: true, timezone: "Europe/Berlin" });
 
         // Schedule to draw winners every Friday at 8 PM
         cron.schedule('0 20 * * 5', async () => {
@@ -301,7 +301,7 @@ module.exports = {
                 await drawWinner(type, fullContext);
                 await updatePanel(type, fullContext);
             }
-        }, { scheduled: true, timezone: "Europe/Germany" });
+        }, { scheduled: true, timezone: "Europe/Berlin" });
 
         console.log("Lottery Addon initialized with cron jobs.");
     },
