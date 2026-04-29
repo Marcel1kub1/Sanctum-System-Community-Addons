@@ -202,6 +202,21 @@ module.exports = {
             console.error(`[Applications] No database connection for guild ${guildId}. Addon cannot function.`);
             return;
         }
+
+        // Ensure the storage table exists on whichever database this server uses
+        try {
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS addon_storage (
+                    addon_name VARCHAR(100) NOT NULL,
+                    \`key\` VARCHAR(100) NOT NULL,
+                    \`value\` TEXT,
+                    PRIMARY KEY (addon_name, \`key\`)
+                )
+            `);
+        } catch (error) {
+            console.error(`[Applications] Failed to verify addon_storage table for guild ${guildId}:`, error);
+        }
+
         console.log(`Initializing Applications Addon for guild ${guildId}...`);
     },
 
