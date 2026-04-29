@@ -353,4 +353,6 @@ module.exports = {
             name: 'applications',
             description: 'Manages the staff application system. (Admin only)',
             execute: handleApplicationsCommand
-        }],
+        }]
+    }
+};
