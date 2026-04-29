@@ -11,6 +11,8 @@ const {
     StringSelectMenuBuilder
 } = require('discord.js');
 
+let globalContext = null;
+
 /**
  * Fetches the application configuration from the server's database.
  * @param {object} db The database connection.
@@ -193,6 +195,123 @@ async function handleApplicationSubmit(interaction, context) {
     }
 }
 
+/**
+ * Handles all interactions for the Applications System.
+ * @param {import('discord.js').Interaction} interaction
+ */
+async function applicationsInteractionCreate(interaction) {
+    if (!interaction.customId) return;
+    
+    // Early exit: Only fetch the database if this interaction belongs to the Application Addon
+    const isAppInteraction = interaction.customId === 'application_start' || 
+                             interaction.customId === 'application_submit_modal' || 
+                             interaction.customId.startsWith('app_setup_');
+    if (!isAppInteraction) return;
+
+    // 1. EARLY DEFERRAL: Instantly tell Discord to wait so it doesn't fail the interaction
+    try {
+        if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_'))) {
+            await interaction.deferUpdate();
+        } else if (interaction.isModalSubmit() && interaction.customId === 'application_submit_modal') {
+            await interaction.deferReply({ ephemeral: true });
+        }
+    } catch (err) {
+        console.error("[Applications] Failed to defer interaction:", err);
+        return;
+    }
+
+    // 2. Fetch the database connection securely
+    const { getDbByGuild, getGuildSettings } = globalContext;
+    const db = await getDbByGuild(interaction.guild.id);
+    if (!db) {
+        const errorMsg = { content: '❌ Database connection failed.', ephemeral: true };
+        return interaction.deferred ? interaction.followUp(errorMsg) : interaction.reply(errorMsg);
+    }
+
+    // 3. Process the component action
+    if (interaction.isButton() && interaction.customId === 'application_start') {
+        const config = await getAppConfig(db);
+        if (!config.submissionChannelId) {
+            return interaction.reply({ content: '❌ The application system has not been fully configured. Please contact an administrator.', ephemeral: true });
+        }
+        await showApplicationModal(interaction, { db });
+        
+    } else if (interaction.isChannelSelectMenu()) {
+        // Now we can safely load the heavy server settings because we already deferred!
+        const guildCfg = await getGuildSettings(interaction.guild.id);
+        const fullContext = { ...globalContext, client: interaction.client, db, guildCfg };
+        
+        try {
+            if (interaction.customId === 'app_setup_sub_channel') {
+                const channelId = interaction.values[0];
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
+                const updatedConfig = await getAppConfig(db);
+                await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+            } else if (interaction.customId === 'app_setup_deploy_channel') {
+                const channelId = interaction.values[0];
+                const channel = interaction.guild.channels.cache.get(channelId) || await interaction.guild.channels.fetch(channelId).catch(() => null);
+                
+                if (!channel) return interaction.followUp({ content: '❌ Channel not found.', ephemeral: true });
+
+                const embed = fullContext.createThemedEmbed(guildCfg.theme, {
+                    title: '📝 Staff Applications',
+                    description: 'Interested in joining our staff team? Click the button below to open an application form.\n\nPlease ensure you meet all requirements before applying and answer all questions honestly and to the best of your ability.',
+                    color: '#5865F2', 
+                    footer: { text: `${interaction.guild.name} | Application System` }
+                });
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
+                );
+
+                await channel.send({ embeds: [embed], components: [row] });
+                
+                const updatedConfig = await getAppConfig(db);
+                await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+                await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
+            }
+        } catch (error) {
+            console.error("[Applications] Error processing Channel Select Menu:", error);
+            await interaction.followUp({ content: '❌ An error occurred. Make sure your database table was successfully created.', ephemeral: true });
+        }
+        
+    } else if (interaction.isStringSelectMenu()) {
+        if (interaction.customId === 'app_setup_edit_question') {
+            try {
+                const qKey = interaction.values[0];
+                const config = await getAppConfig(db);
+                
+                const modal = new ModalBuilder().setCustomId(`app_setup_q_modal_${qKey}`).setTitle(`Edit ${qKey.toUpperCase()}`);
+                const textInput = new TextInputBuilder().setCustomId('new_question_text').setLabel('Question Text (Max 45 chars)').setStyle(TextInputStyle.Short).setMaxLength(45).setRequired(true).setValue(config[qKey] || '');
+
+                modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+                await interaction.showModal(modal);
+            } catch (error) {
+                console.error("[Applications] Error launching Question modal:", error);
+            }
+        }
+        
+    } else if (interaction.isModalSubmit()) {
+        const guildCfg = await getGuildSettings(interaction.guild.id);
+        const fullContext = { ...globalContext, client: interaction.client, db, guildCfg };
+
+        if (interaction.customId === 'application_submit_modal') {
+            await handleApplicationSubmit(interaction, fullContext);
+        } else if (interaction.customId.startsWith('app_setup_q_modal_')) {
+            try {
+                const qKey = interaction.customId.split('_').pop();
+                const newText = interaction.fields.getTextInputValue('new_question_text');
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
+                const updatedConfig = await getAppConfig(db);
+                await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+            } catch (error) {
+                console.error("[Applications] Error saving Question:", error);
+                await interaction.followUp({ content: '❌ An error occurred while saving the question.', ephemeral: true });
+            }
+        }
+    }
+}
+
 module.exports = {
     name: "Applications",
     description: "A staff application system using Discord modals.",
@@ -213,11 +332,17 @@ module.exports = {
     },
 
     async initialize(client, guildId, context) {
+        globalContext = context;
         const { getDbByGuild } = context;
         const db = await getDbByGuild(guildId);
         if (!db) {
             console.error(`[Applications] No database connection for guild ${guildId}. Addon cannot function.`);
             return;
+        }
+
+        // Ensure we only attach the listener once
+        if (!client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate')) {
+            client.on('interactionCreate', applicationsInteractionCreate);
         }
 
         console.log(`Initializing Applications Addon for guild ${guildId}...`);
@@ -229,117 +354,3 @@ module.exports = {
             description: 'Manages the staff application system. (Admin only)',
             execute: handleApplicationsCommand
         }],
-        async onInteraction(interaction, context) {
-            if (!interaction.customId) return;
-            
-            // Early exit: Only fetch the database if this interaction belongs to the Application Addon
-            const isAppInteraction = interaction.customId === 'application_start' || 
-                                     interaction.customId === 'application_submit_modal' || 
-                                     interaction.customId.startsWith('app_setup_');
-            if (!isAppInteraction) return;
-
-            // 1. EARLY DEFERRAL: Instantly tell Discord to wait so it doesn't fail the interaction
-            try {
-                if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_'))) {
-                    await interaction.deferUpdate();
-                } else if (interaction.isModalSubmit() && interaction.customId === 'application_submit_modal') {
-                    await interaction.deferReply({ ephemeral: true });
-                }
-            } catch (err) {
-                console.error("[Applications] Failed to defer interaction:", err);
-                return;
-            }
-
-            // 2. Fetch the database connection securely
-            const { getDbByGuild, getGuildSettings } = context;
-            const db = await getDbByGuild(interaction.guild.id);
-            if (!db) {
-                const errorMsg = { content: '❌ Database connection failed.', ephemeral: true };
-                return interaction.deferred ? interaction.followUp(errorMsg) : interaction.reply(errorMsg);
-            }
-
-            // 3. Process the component action
-            if (interaction.isButton() && interaction.customId === 'application_start') {
-                const config = await getAppConfig(db);
-                if (!config.submissionChannelId) {
-                    return interaction.reply({ content: '❌ The application system has not been fully configured. Please contact an administrator.', ephemeral: true });
-                }
-                await showApplicationModal(interaction, { db });
-                
-            } else if (interaction.isChannelSelectMenu()) {
-                // Now we can safely load the heavy server settings because we already deferred!
-                const guildCfg = await getGuildSettings(interaction.guild.id);
-                const fullContext = { ...context, client: interaction.client, db, guildCfg };
-                
-                try {
-                    if (interaction.customId === 'app_setup_sub_channel') {
-                        const channelId = interaction.values[0];
-                        await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
-                        const updatedConfig = await getAppConfig(db);
-                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
-                    } else if (interaction.customId === 'app_setup_deploy_channel') {
-                        const channelId = interaction.values[0];
-                        const channel = interaction.guild.channels.cache.get(channelId) || await interaction.guild.channels.fetch(channelId).catch(() => null);
-                        
-                        if (!channel) return interaction.followUp({ content: '❌ Channel not found.', ephemeral: true });
-    
-                        const embed = fullContext.createThemedEmbed(guildCfg.theme, {
-                            title: '📝 Staff Applications',
-                            description: 'Interested in joining our staff team? Click the button below to open an application form.\n\nPlease ensure you meet all requirements before applying and answer all questions honestly and to the best of your ability.',
-                            color: '#5865F2', 
-                            footer: { text: `${interaction.guild.name} | Application System` }
-                        });
-    
-                        const row = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
-                        );
-    
-                        await channel.send({ embeds: [embed], components: [row] });
-                        
-                        const updatedConfig = await getAppConfig(db);
-                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
-                        await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
-                    }
-                } catch (error) {
-                    console.error("[Applications] Error processing Channel Select Menu:", error);
-                    await interaction.followUp({ content: '❌ An error occurred. Make sure your database table was successfully created.', ephemeral: true });
-                }
-                
-            } else if (interaction.isStringSelectMenu()) {
-                if (interaction.customId === 'app_setup_edit_question') {
-                    try {
-                        const qKey = interaction.values[0];
-                        const config = await getAppConfig(db);
-                        
-                        const modal = new ModalBuilder().setCustomId(`app_setup_q_modal_${qKey}`).setTitle(`Edit ${qKey.toUpperCase()}`);
-                        const textInput = new TextInputBuilder().setCustomId('new_question_text').setLabel('Question Text (Max 45 chars)').setStyle(TextInputStyle.Short).setMaxLength(45).setRequired(true).setValue(config[qKey] || '');
-    
-                        modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-                        await interaction.showModal(modal);
-                    } catch (error) {
-                        console.error("[Applications] Error launching Question modal:", error);
-                    }
-                }
-                
-            } else if (interaction.isModalSubmit()) {
-                const guildCfg = await getGuildSettings(interaction.guild.id);
-                const fullContext = { ...context, client: interaction.client, db, guildCfg };
-
-                if (interaction.customId === 'application_submit_modal') {
-                    await handleApplicationSubmit(interaction, fullContext);
-                } else if (interaction.customId.startsWith('app_setup_q_modal_')) {
-                    try {
-                        const qKey = interaction.customId.split('_').pop();
-                        const newText = interaction.fields.getTextInputValue('new_question_text');
-                        await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
-                        const updatedConfig = await getAppConfig(db);
-                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
-                    } catch (error) {
-                        console.error("[Applications] Error saving Question:", error);
-                        await interaction.followUp({ content: '❌ An error occurred while saving the question.', ephemeral: true });
-                    }
-                }
-            }
-        }
-    }
-};
