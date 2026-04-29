@@ -149,8 +149,6 @@ async function showApplicationModal(interaction, context) {
 async function handleApplicationSubmit(interaction, context) {
     const { client, createThemedEmbed, guildCfg, db } = context;
     
-    await interaction.deferReply({ ephemeral: true });
-
     const config = await getAppConfig(db);
 
     if (!config.submissionChannelId) {
@@ -240,22 +238,38 @@ module.exports = {
                                      interaction.customId.startsWith('app_setup_');
             if (!isAppInteraction) return;
 
+            // 1. EARLY DEFERRAL: Instantly tell Discord to wait so it doesn't fail the interaction
+            try {
+                if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_'))) {
+                    await interaction.deferUpdate();
+                } else if (interaction.isModalSubmit() && interaction.customId === 'application_submit_modal') {
+                    await interaction.deferReply({ ephemeral: true });
+                }
+            } catch (err) {
+                console.error("[Applications] Failed to defer interaction:", err);
+                return;
+            }
+
+            // 2. Fetch the database connection securely
             const { getDbByGuild, getGuildSettings } = context;
             const db = await getDbByGuild(interaction.guild.id);
-            if (!db) return interaction.reply({ content: '❌ Database connection failed.', ephemeral: true });
+            if (!db) {
+                const errorMsg = { content: '❌ Database connection failed.', ephemeral: true };
+                return interaction.deferred ? interaction.followUp(errorMsg) : interaction.reply(errorMsg);
+            }
 
-            const guildCfg = await getGuildSettings(interaction.guild.id);
-            const fullContext = { ...context, client: interaction.client, db, guildCfg };
-
+            // 3. Process the component action
             if (interaction.isButton() && interaction.customId === 'application_start') {
                 const config = await getAppConfig(db);
                 if (!config.submissionChannelId) {
                     return interaction.reply({ content: '❌ The application system has not been fully configured. Please contact an administrator.', ephemeral: true });
                 }
-                await showApplicationModal(interaction, fullContext);
+                await showApplicationModal(interaction, { db });
+                
             } else if (interaction.isChannelSelectMenu()) {
-                // Instantly defer the update to prevent Discord's 3-second "Interaction Failed" timeout
-                await interaction.deferUpdate().catch(() => {});
+                // Now we can safely load the heavy server settings because we already deferred!
+                const guildCfg = await getGuildSettings(interaction.guild.id);
+                const fullContext = { ...context, client: interaction.client, db, guildCfg };
                 
                 try {
                     if (interaction.customId === 'app_setup_sub_channel') {
@@ -290,6 +304,7 @@ module.exports = {
                     console.error("[Applications] Error processing Channel Select Menu:", error);
                     await interaction.followUp({ content: '❌ An error occurred. Make sure your database table was successfully created.', ephemeral: true });
                 }
+                
             } else if (interaction.isStringSelectMenu()) {
                 if (interaction.customId === 'app_setup_edit_question') {
                     try {
@@ -305,11 +320,14 @@ module.exports = {
                         console.error("[Applications] Error launching Question modal:", error);
                     }
                 }
+                
             } else if (interaction.isModalSubmit()) {
+                const guildCfg = await getGuildSettings(interaction.guild.id);
+                const fullContext = { ...context, client: interaction.client, db, guildCfg };
+
                 if (interaction.customId === 'application_submit_modal') {
                     await handleApplicationSubmit(interaction, fullContext);
                 } else if (interaction.customId.startsWith('app_setup_q_modal_')) {
-                    await interaction.deferUpdate().catch(() => {});
                     try {
                         const qKey = interaction.customId.split('_').pop();
                         const newText = interaction.fields.getTextInputValue('new_question_text');
