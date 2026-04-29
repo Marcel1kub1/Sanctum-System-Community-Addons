@@ -309,9 +309,7 @@ async function applicationsInteractionCreate(interaction) {
     // 1. EARLY DEFERRAL: Instantly tell Discord to wait so it doesn't fail the interaction
     try {
         if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_')) || (interaction.isButton() && interaction.customId.startsWith('app_setup_'))) {
-            if (interaction.customId !== 'app_setup_close') { // Don't defer if we're just deleting the message
-                await interaction.deferUpdate();
-            }
+            await interaction.deferUpdate();
         } else if (interaction.isModalSubmit() && interaction.customId === 'application_submit_modal') {
             await interaction.deferReply({ ephemeral: true });
         }
@@ -341,7 +339,9 @@ async function applicationsInteractionCreate(interaction) {
         const fullContext = { ...globalContext, client: interaction.client, db, guildCfg };
 
         if (interaction.customId === 'app_setup_close') {
-            await interaction.message.delete().catch(() => {});
+            await interaction.deleteReply().catch(async () => {
+                await interaction.message.delete().catch(() => {});
+            });
             return;
         } else if (interaction.customId === 'app_setup_toggle_reminder') {
             const config = await getAppConfig(db);
