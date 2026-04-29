@@ -29,7 +29,8 @@ async function getAppConfig(db) {
         reminderChannelId: null,
         reminderEnabled: 'false',
         panelChannelId: null,
-        panelMessageId: null
+        panelMessageId: null,
+        applicationsOpen: 'true'
     };
     try {
         const [rows] = await db.query("SELECT `key`, `value` FROM addon_storage WHERE addon_name = 'applications'");
@@ -44,6 +45,7 @@ async function getAppConfig(db) {
             if (row.key === 'reminderEnabled') config.reminderEnabled = row.value;
             if (row.key === 'panelChannelId') config.panelChannelId = row.value;
             if (row.key === 'panelMessageId') config.panelMessageId = row.value;
+            if (row.key === 'applicationsOpen') config.applicationsOpen = row.value;
         }
     } catch (e) {
         console.error("[Applications] Warning: Could not fetch config (table might not exist yet). Using defaults.");
@@ -66,11 +68,13 @@ async function generateSetupMessage(config, context) {
     }
 
     let reminderStatus = config.reminderEnabled === 'true' ? '✅ Enabled' : '❌ Disabled';
+    let appStatus = config.applicationsOpen === 'true' ? '🟢 Open' : '🔴 Closed';
 
     const embed = createThemedEmbed(guildCfg.theme, {
         title: '⚙️ Applications System Setup',
         description: 'Configure your application system using the menus below.\nChanges are saved automatically.',
         fields: [
+            { name: 'Application Status', value: appStatus, inline: false },
             { name: 'Submission Channel', value: config.submissionChannelId ? `<#${config.submissionChannelId}>` : 'Not set', inline: false },
             { name: 'Deployed Panel', value: panelStatus, inline: false },
             { name: 'Automated Reminder', value: `Channel: ${config.reminderChannelId ? `<#${config.reminderChannelId}>` : 'Not set'}\nStatus: ${reminderStatus}`, inline: false },
@@ -119,6 +123,11 @@ async function generateSetupMessage(config, context) {
 
     const row5 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
+            .setCustomId('app_setup_toggle_status')
+            .setLabel(config.applicationsOpen === 'true' ? 'Close Applications' : 'Open Applications')
+            .setStyle(config.applicationsOpen === 'true' ? ButtonStyle.Danger : ButtonStyle.Success)
+            .setEmoji(config.applicationsOpen === 'true' ? '🔒' : '🔓'),
+        new ButtonBuilder()
             .setCustomId('app_setup_toggle_reminder')
             .setLabel(config.reminderEnabled === 'true' ? 'Disable Reminders' : 'Enable Reminders')
             .setStyle(config.reminderEnabled === 'true' ? ButtonStyle.Danger : ButtonStyle.Success)
@@ -147,7 +156,7 @@ async function checkAndSendReminder(client, guildId, context) {
         if (!db) return;
 
         const config = await getAppConfig(db);
-        if (config.reminderEnabled !== 'true' || !config.reminderChannelId) return;
+        if (config.applicationsOpen !== 'true' || config.reminderEnabled !== 'true' || !config.reminderChannelId) return;
 
         const guild = client.guilds.cache.get(guildId);
         if (!guild) return;
@@ -329,6 +338,9 @@ async function applicationsInteractionCreate(interaction) {
     // 3. Process the component action
     if (interaction.isButton() && interaction.customId === 'application_start') {
         const config = await getAppConfig(db);
+        if (config.applicationsOpen !== 'true') {
+            return interaction.reply({ content: '❌ Applications are currently closed. Please check back later!', ephemeral: true });
+        }
         if (!config.submissionChannelId) {
             return interaction.reply({ content: '❌ The application system has not been fully configured. Please contact an administrator.', ephemeral: true });
         }
@@ -342,6 +354,16 @@ async function applicationsInteractionCreate(interaction) {
             await interaction.deleteReply().catch(async () => {
                 await interaction.message.delete().catch(() => {});
             });
+            return;
+        } else if (interaction.customId === 'app_setup_toggle_status') {
+            const config = await getAppConfig(db);
+            const newState = config.applicationsOpen === 'true' ? 'false' : 'true';
+            await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'applicationsOpen', newState]);
+            if (newState === 'false') {
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'false']);
+            }
+            const updatedConfig = await getAppConfig(db);
+            await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             return;
         } else if (interaction.customId === 'app_setup_toggle_reminder') {
             const config = await getAppConfig(db);
