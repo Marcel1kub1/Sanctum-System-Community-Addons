@@ -17,22 +17,26 @@ const {
  * @returns {Promise<object>} The configuration.
  */
 async function getAppConfig(db) {
-    const [rows] = await db.query("SELECT `key`, `value` FROM addon_storage WHERE addon_name = 'applications'");
     const config = {
         submissionChannelId: null,
         q1: "What is your age?",
         q2: "Why do you want to be staff?",
         q3: "What is your previous experience?",
-        q4: "How would handle a spamming user?",
+        q4: "How would you handle a spamming user?",
         q5: "Timezone & availability?"
     };
-    for (const row of rows) {
-        if (row.key === 'submissionChannelId') config.submissionChannelId = row.value;
-        if (row.key === 'q1') config.q1 = row.value;
-        if (row.key === 'q2') config.q2 = row.value;
-        if (row.key === 'q3') config.q3 = row.value;
-        if (row.key === 'q4') config.q4 = row.value;
-        if (row.key === 'q5') config.q5 = row.value;
+    try {
+        const [rows] = await db.query("SELECT `key`, `value` FROM addon_storage WHERE addon_name = 'applications'");
+        for (const row of rows) {
+            if (row.key === 'submissionChannelId') config.submissionChannelId = row.value;
+            if (row.key === 'q1') config.q1 = row.value;
+            if (row.key === 'q2') config.q2 = row.value;
+            if (row.key === 'q3') config.q3 = row.value;
+            if (row.key === 'q4') config.q4 = row.value;
+            if (row.key === 'q5') config.q5 = row.value;
+        }
+    } catch (e) {
+        console.error("[Applications] Warning: Could not fetch config (table might not exist yet). Using defaults.");
     }
     return config;
 }
@@ -50,11 +54,11 @@ async function generateSetupMessage(config, context) {
         description: 'Configure your application system using the menus below.\nChanges are saved automatically.',
         fields: [
             { name: 'Submission Channel', value: config.submissionChannelId ? `<#${config.submissionChannelId}>` : 'Not set', inline: false },
-            { name: 'Question 1', value: config.q1, inline: false },
-            { name: 'Question 2', value: config.q2, inline: false },
-            { name: 'Question 3', value: config.q3, inline: false },
-            { name: 'Question 4', value: config.q4, inline: false },
-            { name: 'Question 5', value: config.q5, inline: false },
+            { name: 'Question 1', value: config.q1 || 'Not set', inline: false },
+            { name: 'Question 2', value: config.q2 || 'Not set', inline: false },
+            { name: 'Question 3', value: config.q3 || 'Not set', inline: false },
+            { name: 'Question 4', value: config.q4 || 'Not set', inline: false },
+            { name: 'Question 5', value: config.q5 || 'Not set', inline: false },
         ],
         color: '#5865F2'
     });
@@ -240,53 +244,72 @@ module.exports = {
                 }
                 await showApplicationModal(interaction, fullContext);
             } else if (interaction.isChannelSelectMenu()) {
-                if (interaction.customId === 'app_setup_sub_channel') {
-                    const channelId = interaction.values[0];
-                    await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
-                    const updatedConfig = await getAppConfig(db);
-                    await interaction.update(await generateSetupMessage(updatedConfig, fullContext));
-                } else if (interaction.customId === 'app_setup_deploy_channel') {
-                    const channelId = interaction.values[0];
-                    const channel = interaction.guild.channels.cache.get(channelId);
-                    if (!channel) return interaction.reply({ content: '❌ Channel not found.', ephemeral: true });
-
-                    const embed = fullContext.createThemedEmbed(guildCfg.theme, {
-                        title: '📝 Staff Applications',
-                        description: 'Interested in joining our staff team? Click the button below to open an application form.\n\nPlease ensure you meet all requirements before applying and answer all questions honestly and to the best of your ability.',
-                        color: '#5865F2', 
-                        footer: { text: `${interaction.guild.name} | Application System` }
-                    });
-
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
-                    );
-
-                    await channel.send({ embeds: [embed], components: [row] });
-                    
-                    const updatedConfig = await getAppConfig(db);
-                    await interaction.update(await generateSetupMessage(updatedConfig, fullContext));
-                    await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
+                // Instantly defer the update to prevent Discord's 3-second "Interaction Failed" timeout
+                await interaction.deferUpdate().catch(() => {});
+                
+                try {
+                    if (interaction.customId === 'app_setup_sub_channel') {
+                        const channelId = interaction.values[0];
+                        await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
+                        const updatedConfig = await getAppConfig(db);
+                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+                    } else if (interaction.customId === 'app_setup_deploy_channel') {
+                        const channelId = interaction.values[0];
+                        const channel = interaction.guild.channels.cache.get(channelId) || await interaction.guild.channels.fetch(channelId).catch(() => null);
+                        
+                        if (!channel) return interaction.followUp({ content: '❌ Channel not found.', ephemeral: true });
+    
+                        const embed = fullContext.createThemedEmbed(guildCfg.theme, {
+                            title: '📝 Staff Applications',
+                            description: 'Interested in joining our staff team? Click the button below to open an application form.\n\nPlease ensure you meet all requirements before applying and answer all questions honestly and to the best of your ability.',
+                            color: '#5865F2', 
+                            footer: { text: `${interaction.guild.name} | Application System` }
+                        });
+    
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
+                        );
+    
+                        await channel.send({ embeds: [embed], components: [row] });
+                        
+                        const updatedConfig = await getAppConfig(db);
+                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+                        await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
+                    }
+                } catch (error) {
+                    console.error("[Applications] Error processing Channel Select Menu:", error);
+                    await interaction.followUp({ content: '❌ An error occurred. Make sure your database table was successfully created.', ephemeral: true });
                 }
             } else if (interaction.isStringSelectMenu()) {
                 if (interaction.customId === 'app_setup_edit_question') {
-                    const qKey = interaction.values[0];
-                    const config = await getAppConfig(db);
-                    
-                    const modal = new ModalBuilder().setCustomId(`app_setup_q_modal_${qKey}`).setTitle(`Edit ${qKey.toUpperCase()}`);
-                    const textInput = new TextInputBuilder().setCustomId('new_question_text').setLabel('Question Text (Max 45 chars)').setStyle(TextInputStyle.Short).setMaxLength(45).setRequired(true).setValue(config[qKey] || '');
-
-                    modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-                    await interaction.showModal(modal);
+                    try {
+                        const qKey = interaction.values[0];
+                        const config = await getAppConfig(db);
+                        
+                        const modal = new ModalBuilder().setCustomId(`app_setup_q_modal_${qKey}`).setTitle(`Edit ${qKey.toUpperCase()}`);
+                        const textInput = new TextInputBuilder().setCustomId('new_question_text').setLabel('Question Text (Max 45 chars)').setStyle(TextInputStyle.Short).setMaxLength(45).setRequired(true).setValue(config[qKey] || '');
+    
+                        modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+                        await interaction.showModal(modal);
+                    } catch (error) {
+                        console.error("[Applications] Error launching Question modal:", error);
+                    }
                 }
             } else if (interaction.isModalSubmit()) {
                 if (interaction.customId === 'application_submit_modal') {
                     await handleApplicationSubmit(interaction, fullContext);
                 } else if (interaction.customId.startsWith('app_setup_q_modal_')) {
-                    const qKey = interaction.customId.split('_').pop();
-                    const newText = interaction.fields.getTextInputValue('new_question_text');
-                    await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
-                    const updatedConfig = await getAppConfig(db);
-                    await interaction.update(await generateSetupMessage(updatedConfig, fullContext));
+                    await interaction.deferUpdate().catch(() => {});
+                    try {
+                        const qKey = interaction.customId.split('_').pop();
+                        const newText = interaction.fields.getTextInputValue('new_question_text');
+                        await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
+                        const updatedConfig = await getAppConfig(db);
+                        await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+                    } catch (error) {
+                        console.error("[Applications] Error saving Question:", error);
+                        await interaction.followUp({ content: '❌ An error occurred while saving the question.', ephemeral: true });
+                    }
                 }
             }
         }
