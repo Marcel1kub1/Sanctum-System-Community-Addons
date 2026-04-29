@@ -1,6 +1,6 @@
 {
     "name": "Application-System",
-    "description": "This is an Application System for Staff applications or whatever you want",
+    "description": "A fully customizable Application System featuring modal forms, editable questions, panel management, and automated daily recruitment reminders.",
     "type": "feature",
-    "folder": "This is Our application System "
+    "folder": "Applications System"
 }

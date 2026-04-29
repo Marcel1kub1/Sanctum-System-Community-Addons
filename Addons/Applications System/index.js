@@ -25,7 +25,11 @@ async function getAppConfig(db) {
         q2: "Why do you want to be staff?",
         q3: "What is your previous experience?",
         q4: "How would you handle a spamming user?",
-        q5: "Timezone & availability?"
+        q5: "Timezone & availability?",
+        reminderChannelId: null,
+        reminderEnabled: 'false',
+        panelChannelId: null,
+        panelMessageId: null
     };
     try {
         const [rows] = await db.query("SELECT `key`, `value` FROM addon_storage WHERE addon_name = 'applications'");
@@ -36,6 +40,10 @@ async function getAppConfig(db) {
             if (row.key === 'q3') config.q3 = row.value;
             if (row.key === 'q4') config.q4 = row.value;
             if (row.key === 'q5') config.q5 = row.value;
+            if (row.key === 'reminderChannelId') config.reminderChannelId = row.value;
+            if (row.key === 'reminderEnabled') config.reminderEnabled = row.value;
+            if (row.key === 'panelChannelId') config.panelChannelId = row.value;
+            if (row.key === 'panelMessageId') config.panelMessageId = row.value;
         }
     } catch (e) {
         console.error("[Applications] Warning: Could not fetch config (table might not exist yet). Using defaults.");
@@ -51,11 +59,21 @@ async function getAppConfig(db) {
  */
 async function generateSetupMessage(config, context) {
     const { createThemedEmbed, guildCfg } = context;
+    
+    let panelStatus = 'Not deployed';
+    if (config.panelChannelId && config.panelMessageId) {
+        panelStatus = `<#${config.panelChannelId}> (Jump to Message)`;
+    }
+
+    let reminderStatus = config.reminderEnabled === 'true' ? '✅ Enabled' : '❌ Disabled';
+
     const embed = createThemedEmbed(guildCfg.theme, {
         title: '⚙️ Applications System Setup',
         description: 'Configure your application system using the menus below.\nChanges are saved automatically.',
         fields: [
             { name: 'Submission Channel', value: config.submissionChannelId ? `<#${config.submissionChannelId}>` : 'Not set', inline: false },
+            { name: 'Deployed Panel', value: panelStatus, inline: false },
+            { name: 'Automated Reminder', value: `Channel: ${config.reminderChannelId ? `<#${config.reminderChannelId}>` : 'Not set'}\nStatus: ${reminderStatus}`, inline: false },
             { name: 'Question 1', value: config.q1 || 'Not set', inline: false },
             { name: 'Question 2', value: config.q2 || 'Not set', inline: false },
             { name: 'Question 3', value: config.q3 || 'Not set', inline: false },
@@ -88,11 +106,91 @@ async function generateSetupMessage(config, context) {
     const row3 = new ActionRowBuilder().addComponents(
         new ChannelSelectMenuBuilder()
             .setCustomId('app_setup_deploy_channel')
-            .setPlaceholder('Deploy "Apply Now" Panel to Channel...')
+            .setPlaceholder('Deploy / Resend "Apply Now" Panel to Channel...')
             .setChannelTypes(ChannelType.GuildText)
     );
 
-    return { embeds: [embed], components: [row1, row2, row3] };
+    const row4 = new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+            .setCustomId('app_setup_reminder_channel')
+            .setPlaceholder('Select Daily Reminder Channel...')
+            .setChannelTypes(ChannelType.GuildText)
+    );
+
+    const row5 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('app_setup_toggle_reminder')
+            .setLabel(config.reminderEnabled === 'true' ? 'Disable Reminders' : 'Enable Reminders')
+            .setStyle(config.reminderEnabled === 'true' ? ButtonStyle.Danger : ButtonStyle.Success)
+            .setEmoji('⏰'),
+        new ButtonBuilder()
+            .setCustomId('app_setup_delete_panel')
+            .setLabel('Delete Deployed Panel')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('🗑️'),
+        new ButtonBuilder()
+            .setCustomId('app_setup_close')
+            .setLabel('Close Setup')
+            .setStyle(ButtonStyle.Secondary)
+    );
+
+    return { embeds: [embed], components: [row1, row2, row3, row4, row5] };
+}
+
+/**
+ * Background function to check inactivity and send the reminder panel.
+ */
+async function checkAndSendReminder(client, guildId, context) {
+    try {
+        const { getDbByGuild, getGuildSettings } = context;
+        const db = await getDbByGuild(guildId);
+        if (!db) return;
+
+        const config = await getAppConfig(db);
+        if (config.reminderEnabled !== 'true' || !config.reminderChannelId) return;
+
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) return;
+
+        const channel = guild.channels.cache.get(config.reminderChannelId);
+        if (!channel) return;
+
+        const messages = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+        const lastMsg = messages?.first();
+        if (!lastMsg) return; // If channel is completely empty, don't trigger.
+
+        const hoursSinceLastMsg = (Date.now() - lastMsg.createdTimestamp) / (1000 * 60 * 60);
+        
+        // 7 hours of inactivity required
+        if (hoursSinceLastMsg >= 7) {
+            // Prevent sending a reminder more than once every 24 hours
+            const lastReminder = config.lastReminderTime ? parseInt(config.lastReminderTime) : 0;
+            const hoursSinceReminder = (Date.now() - lastReminder) / (1000 * 60 * 60);
+
+            if (hoursSinceReminder >= 24) {
+                const guildCfg = await getGuildSettings(guildId);
+                const fullContext = { ...context, client, db, guildCfg };
+                
+                const embed = fullContext.createThemedEmbed(guildCfg.theme, {
+                    title: '👋 We are looking for Staff!',
+                    description: 'Wanna be a staff member for our community? Then join the staff team now!\n\nClick the button below to start your application.',
+                    color: '#5865F2',
+                    footer: { text: `Automated Reminder` }
+                });
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
+                );
+
+                await channel.send({ embeds: [embed], components: [row] });
+                
+                // Save the new reminder time
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'lastReminderTime', Date.now().toString()]);
+            }
+        }
+    } catch (err) {
+        console.error(`[Applications] Reminder check failed for guild ${guildId}:`, err);
+    }
 }
 
 /**
@@ -210,8 +308,10 @@ async function applicationsInteractionCreate(interaction) {
 
     // 1. EARLY DEFERRAL: Instantly tell Discord to wait so it doesn't fail the interaction
     try {
-        if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_'))) {
-            await interaction.deferUpdate();
+        if (interaction.isChannelSelectMenu() || (interaction.isModalSubmit() && interaction.customId.startsWith('app_setup_q_modal_')) || (interaction.isButton() && interaction.customId.startsWith('app_setup_'))) {
+            if (interaction.customId !== 'app_setup_close') { // Don't defer if we're just deleting the message
+                await interaction.deferUpdate();
+            }
         } else if (interaction.isModalSubmit() && interaction.customId === 'application_submit_modal') {
             await interaction.deferReply({ ephemeral: true });
         }
@@ -236,6 +336,33 @@ async function applicationsInteractionCreate(interaction) {
         }
         await showApplicationModal(interaction, { db });
         
+    } else if (interaction.isButton() && interaction.customId.startsWith('app_setup_')) {
+        const guildCfg = await getGuildSettings(interaction.guild.id);
+        const fullContext = { ...globalContext, client: interaction.client, db, guildCfg };
+
+        if (interaction.customId === 'app_setup_close') {
+            await interaction.message.delete().catch(() => {});
+            return;
+        } else if (interaction.customId === 'app_setup_toggle_reminder') {
+            const config = await getAppConfig(db);
+            const newState = config.reminderEnabled === 'true' ? 'false' : 'true';
+            await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', newState]);
+            const updatedConfig = await getAppConfig(db);
+            await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+        } else if (interaction.customId === 'app_setup_delete_panel') {
+            const config = await getAppConfig(db);
+            if (config.panelChannelId && config.panelMessageId) {
+                const channel = interaction.guild.channels.cache.get(config.panelChannelId);
+                if (channel) await channel.messages.delete(config.panelMessageId).catch(() => {});
+                await db.query("DELETE FROM addon_storage WHERE addon_name = 'applications' AND `key` IN ('panelChannelId', 'panelMessageId')");
+                const updatedConfig = await getAppConfig(db);
+                await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
+                await interaction.followUp({ content: '✅ Deployed panel has been deleted.', ephemeral: true });
+            } else {
+                await interaction.followUp({ content: '❌ No panel is currently deployed.', ephemeral: true });
+            }
+        }
+
     } else if (interaction.isChannelSelectMenu()) {
         // Now we can safely load the heavy server settings because we already deferred!
         const guildCfg = await getGuildSettings(interaction.guild.id);
@@ -253,6 +380,13 @@ async function applicationsInteractionCreate(interaction) {
                 
                 if (!channel) return interaction.followUp({ content: '❌ Channel not found.', ephemeral: true });
 
+                // Delete the old panel if one exists
+                const config = await getAppConfig(db);
+                if (config.panelChannelId && config.panelMessageId) {
+                    const oldChannel = interaction.guild.channels.cache.get(config.panelChannelId);
+                    if (oldChannel) await oldChannel.messages.delete(config.panelMessageId).catch(() => {});
+                }
+
                 const embed = fullContext.createThemedEmbed(guildCfg.theme, {
                     title: '📝 Staff Applications',
                     description: 'Interested in joining our staff team? Click the button below to open an application form.\n\nPlease ensure you meet all requirements before applying and answer all questions honestly and to the best of your ability.',
@@ -264,11 +398,20 @@ async function applicationsInteractionCreate(interaction) {
                     new ButtonBuilder().setCustomId('application_start').setLabel('Apply Now').setStyle(ButtonStyle.Primary).setEmoji('📄')
                 );
 
-                await channel.send({ embeds: [embed], components: [row] });
+                const panelMsg = await channel.send({ embeds: [embed], components: [row] });
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelChannelId', channel.id]);
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelMessageId', panelMsg.id]);
                 
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
                 await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
+            } else if (interaction.customId === 'app_setup_reminder_channel') {
+                const channelId = interaction.values[0];
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderChannelId', channelId]);
+                // Automatically enable reminders if a channel is selected
+                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'true']);
+                const updatedConfig = await getAppConfig(db);
+                await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             }
         } catch (error) {
             console.error("[Applications] Error processing Channel Select Menu:", error);
@@ -344,6 +487,15 @@ module.exports = {
         if (!client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate')) {
             client.on('interactionCreate', applicationsInteractionCreate);
         }
+
+        // Setup the background interval for the inactivity reminder (checks every 30 minutes)
+        if (!client.__appReminderIntervals) client.__appReminderIntervals = new Map();
+        if (client.__appReminderIntervals.has(guildId)) clearInterval(client.__appReminderIntervals.get(guildId));
+
+        const interval = setInterval(() => checkAndSendReminder(client, guildId, context), 30 * 60 * 1000);
+        client.__appReminderIntervals.set(guildId, interval);
+        // Run an initial check 10 seconds after boot
+        setTimeout(() => checkAndSendReminder(client, guildId, context), 10000);
 
         console.log(`Initializing Applications Addon for guild ${guildId}...`);
     },
