@@ -195,15 +195,7 @@ module.exports = {
     name: "Applications",
     description: "A staff application system using Discord modals.",
 
-    async initialize(client, guildId, context) {
-        const { getDbByGuild } = context;
-        const db = await getDbByGuild(guildId);
-        if (!db) {
-            console.error(`[Applications] No database connection for guild ${guildId}. Addon cannot function.`);
-            return;
-        }
-
-        // Ensure the storage table exists on whichever database this server uses
+    async setupDatabase(db, guildId) {
         try {
             await db.query(`
                 CREATE TABLE IF NOT EXISTS addon_storage (
@@ -215,6 +207,15 @@ module.exports = {
             `);
         } catch (error) {
             console.error(`[Applications] Failed to verify addon_storage table for guild ${guildId}:`, error);
+        }
+    },
+
+    async initialize(client, guildId, context) {
+        const { getDbByGuild } = context;
+        const db = await getDbByGuild(guildId);
+        if (!db) {
+            console.error(`[Applications] No database connection for guild ${guildId}. Addon cannot function.`);
+            return;
         }
 
         console.log(`Initializing Applications Addon for guild ${guildId}...`);
