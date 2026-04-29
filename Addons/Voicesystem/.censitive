@@ -1,0 +1,8 @@
+.env:(?i).*(KEY|TOKEN|SECRET|PASSWORD|PASS|PW|CREDENTIALS|SECRET_KEY|API_KEY)=.*
+
+// Censor entire private key files
+*id_rsa:.*
+*.pem:.*
+
+// Generic pattern for any file to catch common secret formats and keywords like 'password', 'token', 'database', 'user', 'host', etc.
+*:(?i).*(password|secret|token|key|credential|private|auth|bot_token|client_secret|db_pass|database_password|database|user|host).*
