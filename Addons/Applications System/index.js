@@ -176,11 +176,11 @@ async function handleApplicationSubmit(interaction, context) {
         color: '#2ECC71',
         fields: [
             { name: 'Applicant', value: `${interaction.user} (${interaction.user.id})`, inline: false },
-            { name: config.q1, value: a1, inline: false },
-            { name: config.q2, value: `\`\`\`${a2}\`\`\``, inline: false },
-            { name: config.q3, value: `\`\`\`${a3}\`\`\``, inline: false },
-            { name: config.q4, value: `\`\`\`${a4}\`\`\``, inline: false },
-            { name: config.q5, value: a5, inline: false },
+            { name: config.q1 || 'Question 1', value: a1 || 'No answer provided', inline: false },
+            { name: config.q2 || 'Question 2', value: `\`\`\`${a2 || 'No answer provided'}\`\`\``, inline: false },
+            { name: config.q3 || 'Question 3', value: `\`\`\`${a3 || 'No answer provided'}\`\`\``, inline: false },
+            { name: config.q4 || 'Question 4', value: `\`\`\`${a4 || 'No answer provided'}\`\`\``, inline: false },
+            { name: config.q5 || 'Question 5', value: a5 || 'No answer provided', inline: false },
         ],
         timestamp: new Date(),
         footer: { text: `Application System` }
@@ -232,8 +232,18 @@ module.exports = {
             execute: handleApplicationsCommand
         }],
         async onInteraction(interaction, context) {
+            if (!interaction.customId) return;
+            
+            // Early exit: Only fetch the database if this interaction belongs to the Application Addon
+            const isAppInteraction = interaction.customId === 'application_start' || 
+                                     interaction.customId === 'application_submit_modal' || 
+                                     interaction.customId.startsWith('app_setup_');
+            if (!isAppInteraction) return;
+
             const { getDbByGuild, getGuildSettings } = context;
             const db = await getDbByGuild(interaction.guild.id);
+            if (!db) return interaction.reply({ content: '❌ Database connection failed.', ephemeral: true });
+
             const guildCfg = await getGuildSettings(interaction.guild.id);
             const fullContext = { ...context, client: interaction.client, db, guildCfg };
 
