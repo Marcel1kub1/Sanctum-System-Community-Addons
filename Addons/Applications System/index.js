@@ -12,6 +12,7 @@ const {
 } = require('discord.js');
 
 let globalContext = null;
+const appConfigCache = new WeakMap();
 
 /**
  * Fetches the application configuration from the server's database.
@@ -19,6 +20,7 @@ let globalContext = null;
  * @returns {Promise<object>} The configuration.
  */
 async function getAppConfig(db) {
+    if (appConfigCache.has(db)) return appConfigCache.get(db);
     const config = {
         submissionChannelId: null,
         q1: "What is your age?",
@@ -50,6 +52,7 @@ async function getAppConfig(db) {
     } catch (e) {
         console.error("[Applications] Warning: Could not fetch config (table might not exist yet). Using defaults.");
     }
+    appConfigCache.set(db, config);
     return config;
 }
 
@@ -195,6 +198,7 @@ async function checkAndSendReminder(client, guildId, context) {
                 
                 // Save the new reminder time
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'lastReminderTime', Date.now().toString()]);
+                appConfigCache.delete(db);
             }
         }
     } catch (err) {
@@ -362,6 +366,7 @@ async function applicationsInteractionCreate(interaction) {
             if (newState === 'false') {
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'false']);
             }
+            appConfigCache.delete(db);
             const updatedConfig = await getAppConfig(db);
             await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             return;
@@ -369,6 +374,7 @@ async function applicationsInteractionCreate(interaction) {
             const config = await getAppConfig(db);
             const newState = config.reminderEnabled === 'true' ? 'false' : 'true';
             await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', newState]);
+            appConfigCache.delete(db);
             const updatedConfig = await getAppConfig(db);
             await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
         } else if (interaction.customId === 'app_setup_delete_panel') {
@@ -377,6 +383,7 @@ async function applicationsInteractionCreate(interaction) {
                 const channel = interaction.guild.channels.cache.get(config.panelChannelId);
                 if (channel) await channel.messages.delete(config.panelMessageId).catch(() => {});
                 await db.query("DELETE FROM addon_storage WHERE addon_name = 'applications' AND `key` IN ('panelChannelId', 'panelMessageId')");
+                appConfigCache.delete(db);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
                 await interaction.followUp({ content: '✅ Deployed panel has been deleted.', ephemeral: true });
@@ -394,6 +401,7 @@ async function applicationsInteractionCreate(interaction) {
             if (interaction.customId === 'app_setup_sub_channel') {
                 const channelId = interaction.values[0];
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
+                appConfigCache.delete(db);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             } else if (interaction.customId === 'app_setup_deploy_channel') {
@@ -423,6 +431,7 @@ async function applicationsInteractionCreate(interaction) {
                 const panelMsg = await channel.send({ embeds: [embed], components: [row] });
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelChannelId', channel.id]);
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelMessageId', panelMsg.id]);
+                appConfigCache.delete(db);
                 
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
@@ -432,6 +441,7 @@ async function applicationsInteractionCreate(interaction) {
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderChannelId', channelId]);
                 // Automatically enable reminders if a channel is selected
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'true']);
+                appConfigCache.delete(db);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             }
@@ -467,6 +477,7 @@ async function applicationsInteractionCreate(interaction) {
                 const qKey = interaction.customId.split('_').pop();
                 const newText = interaction.fields.getTextInputValue('new_question_text');
                 await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
+                appConfigCache.delete(db);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             } catch (error) {
@@ -505,10 +516,10 @@ module.exports = {
             return;
         }
 
-        // Ensure we only attach the listener once
-        if (!client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate')) {
-            client.on('interactionCreate', applicationsInteractionCreate);
-        }
+        // Remove old listener if hot-reloading, then attach the new one
+        const existingListener = client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate');
+        if (existingListener) client.off('interactionCreate', existingListener);
+        client.on('interactionCreate', applicationsInteractionCreate);
 
         // Setup the background interval for the inactivity reminder (checks every 30 minutes)
         if (!client.__appReminderIntervals) client.__appReminderIntervals = new Map();
