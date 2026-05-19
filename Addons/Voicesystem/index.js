@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 let listenersAttached = false;
 let globalContext = null;
+const processingUsers = new Set();
 
 // Manage per-guild configuration data locally within the addon's folder
 function getGuildDataPath(guildId) {
@@ -59,6 +60,15 @@ function attachListeners(client) {
         
         // User joined the Master Channel
         if (newState.channelId === data.masterChannelId && oldState.channelId !== data.masterChannelId) {
+            if (processingUsers.has(newState.member.id)) return;
+            processingUsers.add(newState.member.id);
+
+            const existing = Object.entries(data.activeChannels).find(([id, info]) => info.ownerId === newState.member.id);
+            if (existing) {
+                processingUsers.delete(newState.member.id);
+                return;
+            }
+
             const member = newState.member;
             const category = newState.channel?.parent;
 
@@ -79,6 +89,7 @@ function attachListeners(client) {
                 } catch (moveError) {
                     console.warn(`[Addon:VoiceChatSystem] User disconnected before move. Cleaning up...`);
                     await newChannel.delete().catch(() => {});
+                    processingUsers.delete(member.id);
                     return;
                 }
 
@@ -90,8 +101,11 @@ function attachListeners(client) {
                     data.activeChannels[newChannel.id] = { ownerId: member.id, panelMessageId: panelMessage.id };
                     saveGuildData(guildId, data);
                 }
+
+                processingUsers.delete(member.id);
             } catch (error) {
                 console.error('[Addon:VoiceChatSystem] Error creating VC:', error);
+                processingUsers.delete(newState.member?.id);
             }
         }
 
