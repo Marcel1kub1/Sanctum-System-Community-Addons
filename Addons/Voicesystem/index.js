@@ -139,33 +139,58 @@ function attachListeners(client) {
 
         // Control Panel Buttons
         if (interaction.isButton() && interaction.customId.startsWith('vc_')) {
-            await interaction.deferUpdate().catch(() => {});
             const channel = interaction.member?.voice?.channel;
-            if (!channel) return interaction.followUp({ content: 'You must be in a voice channel to use these controls.', ephemeral: true }).catch(() => {});
+            if (!channel) return interaction.reply({ content: 'You must be in a voice channel to use these controls.', ephemeral: true }).catch(() => {});
 
             const channelInfo = data.activeChannels[channel.id];
-            if (!channelInfo) return interaction.followUp({ content: 'This is not a managed voice channel.', ephemeral: true }).catch(() => {});
+            if (!channelInfo) return interaction.reply({ content: 'This is not a managed voice channel.', ephemeral: true }).catch(() => {});
 
             // Allow non-owners to claim an abandoned channel
             if (interaction.customId === 'vc_claim') {
-                if (channelInfo.ownerId === interaction.user.id) return interaction.followUp({ content: 'You already own this channel.', ephemeral: true }).catch(() => {});
-                if (channel.members.has(channelInfo.ownerId)) return interaction.followUp({ content: '❌ The current owner is still in the channel.', ephemeral: true }).catch(() => {});
+                if (channelInfo.ownerId === interaction.user.id) return interaction.reply({ content: 'You already own this channel.', ephemeral: true }).catch(() => {});
+                if (channel.members.has(channelInfo.ownerId)) return interaction.reply({ content: '❌ The current owner is still in the channel.', ephemeral: true }).catch(() => {});
                 
-                // Update owner and permissions
                 data.activeChannels[channel.id].ownerId = interaction.user.id;
                 saveGuildData(guildId, data);
                 await channel.permissionOverwrites.edit(interaction.user.id, { ManageChannels: true, MuteMembers: true, DeafenMembers: true, MoveMembers: true });
 
                 const { theme } = await globalContext.getGuildSettings(guildId);
                 await updateControlPanel(interaction, theme);
-                return interaction.followUp({ content: '👑 You are now the new owner of this channel!', ephemeral: true }).catch(() => {});
+                return interaction.reply({ content: '👑 You are now the new owner of this channel!', ephemeral: true }).catch(() => {});
             }
 
             // From here, only the owner or an admin can proceed
             if (channelInfo.ownerId !== interaction.user.id && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.followUp({ content: '❌ Only the owner of this channel can use these controls.', ephemeral: true }).catch(() => {});
+                return interaction.reply({ content: '❌ Only the owner of this channel can use these controls.', ephemeral: true }).catch(() => {});
             }
 
+            // Modals must be shown directly — never deferUpdate before showModal
+            if (interaction.customId === 'vc_rename') {
+                const modal = new ModalBuilder().setCustomId('vc_modal_rename').setTitle('Rename Channel');
+                const input = new TextInputBuilder().setCustomId('new_name').setLabel('New Channel Name').setStyle(TextInputStyle.Short).setValue(channel.name).setMaxLength(30);
+                modal.addComponents(new ActionRowBuilder().addComponents(input));
+                return interaction.showModal(modal).catch(() => {});
+            }
+            if (interaction.customId === 'vc_limit') {
+                const modal = new ModalBuilder().setCustomId('vc_modal_limit').setTitle('Set User Limit');
+                const input = new TextInputBuilder().setCustomId('user_limit').setLabel('Number (0-99, 0 for unlimited)').setStyle(TextInputStyle.Short).setValue(String(channel.userLimit || 0));
+                modal.addComponents(new ActionRowBuilder().addComponents(input));
+                return interaction.showModal(modal).catch(() => {});
+            }
+            if (interaction.customId === 'vc_bitrate') {
+                const modal = new ModalBuilder().setCustomId('vc_modal_bitrate').setTitle('Set Channel Bitrate');
+                const maxBitrate = Math.floor(interaction.guild.maximumBitrate / 1000);
+                const input = new TextInputBuilder()
+                    .setCustomId('bitrate')
+                    .setLabel(`Bitrate in kbps (8-${maxBitrate})`)
+                    .setStyle(TextInputStyle.Short)
+                    .setValue(String(channel.bitrate / 1000));
+                modal.addComponents(new ActionRowBuilder().addComponents(input));
+                return interaction.showModal(modal).catch(() => {});
+            }
+
+            // For all other buttons, defer then act
+            await interaction.deferUpdate().catch(() => {});
             const { theme } = await globalContext.getGuildSettings(guildId);
 
             switch (interaction.customId) {
@@ -190,18 +215,6 @@ function attachListeners(client) {
                     await interaction.followUp({ content: state.isHidden ? '👁️ Channel is now visible!' : '🙈 Channel is now hidden!', ephemeral: true }).catch(() => {});
                     break;
                 }
-                case 'vc_rename': {
-                    const modal = new ModalBuilder().setCustomId('vc_modal_rename').setTitle('Rename Channel');
-                    const input = new TextInputBuilder().setCustomId('new_name').setLabel('New Channel Name').setStyle(TextInputStyle.Short).setValue(channel.name).setMaxLength(30);
-                    modal.addComponents(new ActionRowBuilder().addComponents(input));
-                    return interaction.showModal(modal).catch(() => {});
-                }
-                case 'vc_limit': {
-                    const modal = new ModalBuilder().setCustomId('vc_modal_limit').setTitle('Set User Limit');
-                    const input = new TextInputBuilder().setCustomId('user_limit').setLabel('Number (0-99, 0 for unlimited)').setStyle(TextInputStyle.Short).setValue(String(channel.userLimit || 0));
-                    modal.addComponents(new ActionRowBuilder().addComponents(input));
-                    return interaction.showModal(modal).catch(() => {});
-                }
                 case 'vc_kick':
                 case 'vc_permit':
                 case 'vc_reject':
@@ -218,17 +231,6 @@ function attachListeners(client) {
                     await updateControlPanel(interaction, theme);
                     await interaction.followUp({ content: state.isStreamingDisabled ? '📹 Streaming has been enabled!' : '📹 Streaming has been disabled for @everyone.', ephemeral: true }).catch(() => {});
                     break;
-                }
-                case 'vc_bitrate': {
-                    const modal = new ModalBuilder().setCustomId('vc_modal_bitrate').setTitle('Set Channel Bitrate');
-                    const maxBitrate = Math.floor(interaction.guild.maximumBitrate / 1000);
-                    const input = new TextInputBuilder()
-                        .setCustomId('bitrate')
-                        .setLabel(`Bitrate in kbps (8-${maxBitrate})`)
-                        .setStyle(TextInputStyle.Short)
-                        .setValue(String(channel.bitrate / 1000));
-                    modal.addComponents(new ActionRowBuilder().addComponents(input));
-                    return interaction.showModal(modal).catch(() => {});
                 }
             }
         }
