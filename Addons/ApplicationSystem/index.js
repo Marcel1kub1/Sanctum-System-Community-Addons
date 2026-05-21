@@ -12,7 +12,6 @@ const {
 } = require('discord.js');
 
 let globalContext = null;
-const appConfigCache = new WeakMap();
 
 /**
  * Fetches the application configuration from the server's database.
@@ -20,8 +19,7 @@ const appConfigCache = new WeakMap();
  * @returns {Promise<object>} The configuration.
  */
 async function getAppConfig(db) {
-    if (appConfigCache.has(db)) return appConfigCache.get(db);
-    const config = {
+    const defaults = {
         submissionChannelId: null,
         q1: "What is your age?",
         q2: "Why do you want to be staff?",
@@ -35,25 +33,19 @@ async function getAppConfig(db) {
         applicationsOpen: 'true'
     };
     try {
-        const [rows] = await db.query("SELECT `key`, `value` FROM addon_storage WHERE addon_name = 'applications'");
-        for (const row of rows) {
-            if (row.key === 'submissionChannelId') config.submissionChannelId = row.value;
-            if (row.key === 'q1') config.q1 = row.value;
-            if (row.key === 'q2') config.q2 = row.value;
-            if (row.key === 'q3') config.q3 = row.value;
-            if (row.key === 'q4') config.q4 = row.value;
-            if (row.key === 'q5') config.q5 = row.value;
-            if (row.key === 'reminderChannelId') config.reminderChannelId = row.value;
-            if (row.key === 'reminderEnabled') config.reminderEnabled = row.value;
-            if (row.key === 'panelChannelId') config.panelChannelId = row.value;
-            if (row.key === 'panelMessageId') config.panelMessageId = row.value;
-            if (row.key === 'applicationsOpen') config.applicationsOpen = row.value;
+        const [rows] = await db.query("SELECT config FROM addon_applications WHERE id = 1");
+        if (rows.length > 0 && rows[0].config) {
+            const saved = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config;
+            return { ...defaults, ...saved };
         }
     } catch (e) {
-        console.error("[Applications] Warning: Could not fetch config (table might not exist yet). Using defaults.");
+        console.error("[Applications] Warning: Could not fetch config. Using defaults.");
     }
-    appConfigCache.set(db, config);
-    return config;
+    return defaults;
+}
+
+async function saveAppConfig(db, config) {
+    await db.query('REPLACE INTO addon_applications (id, config) VALUES (1, ?)', [JSON.stringify(config)]);
 }
 
 /**
@@ -197,8 +189,8 @@ async function checkAndSendReminder(client, guildId, context) {
                 await channel.send({ embeds: [embed], components: [row] });
                 
                 // Save the new reminder time
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'lastReminderTime', Date.now().toString()]);
-                appConfigCache.delete(db);
+                config.lastReminderTime = Date.now().toString();
+                await saveAppConfig(db, config);
             }
         }
     } catch (err) {
@@ -361,20 +353,18 @@ async function applicationsInteractionCreate(interaction) {
             return;
         } else if (interaction.customId === 'app_setup_toggle_status') {
             const config = await getAppConfig(db);
-            const newState = config.applicationsOpen === 'true' ? 'false' : 'true';
-            await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'applicationsOpen', newState]);
-            if (newState === 'false') {
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'false']);
+            config.applicationsOpen = config.applicationsOpen === 'true' ? 'false' : 'true';
+            if (config.applicationsOpen === 'false') {
+                config.reminderEnabled = 'false';
             }
-            appConfigCache.delete(db);
+            await saveAppConfig(db, config);
             const updatedConfig = await getAppConfig(db);
             await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             return;
         } else if (interaction.customId === 'app_setup_toggle_reminder') {
             const config = await getAppConfig(db);
-            const newState = config.reminderEnabled === 'true' ? 'false' : 'true';
-            await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', newState]);
-            appConfigCache.delete(db);
+            config.reminderEnabled = config.reminderEnabled === 'true' ? 'false' : 'true';
+            await saveAppConfig(db, config);
             const updatedConfig = await getAppConfig(db);
             await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
         } else if (interaction.customId === 'app_setup_delete_panel') {
@@ -382,8 +372,9 @@ async function applicationsInteractionCreate(interaction) {
             if (config.panelChannelId && config.panelMessageId) {
                 const channel = interaction.guild.channels.cache.get(config.panelChannelId);
                 if (channel) await channel.messages.delete(config.panelMessageId).catch(() => {});
-                await db.query("DELETE FROM addon_storage WHERE addon_name = 'applications' AND `key` IN ('panelChannelId', 'panelMessageId')");
-                appConfigCache.delete(db);
+                config.panelChannelId = null;
+                config.panelMessageId = null;
+                await saveAppConfig(db, config);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
                 await interaction.followUp({ content: '✅ Deployed panel has been deleted.', ephemeral: true });
@@ -400,8 +391,9 @@ async function applicationsInteractionCreate(interaction) {
         try {
             if (interaction.customId === 'app_setup_sub_channel') {
                 const channelId = interaction.values[0];
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'submissionChannelId', channelId]);
-                appConfigCache.delete(db);
+                const config = await getAppConfig(db);
+                config.submissionChannelId = channelId;
+                await saveAppConfig(db, config);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             } else if (interaction.customId === 'app_setup_deploy_channel') {
@@ -429,19 +421,19 @@ async function applicationsInteractionCreate(interaction) {
                 );
 
                 const panelMsg = await channel.send({ embeds: [embed], components: [row] });
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelChannelId', channel.id]);
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'panelMessageId', panelMsg.id]);
-                appConfigCache.delete(db);
+                config.panelChannelId = channel.id;
+                config.panelMessageId = panelMsg.id;
+                await saveAppConfig(db, config);
                 
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
                 await interaction.followUp({ content: `✅ Application panel deployed to ${channel}!`, ephemeral: true });
             } else if (interaction.customId === 'app_setup_reminder_channel') {
                 const channelId = interaction.values[0];
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderChannelId', channelId]);
-                // Automatically enable reminders if a channel is selected
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', 'reminderEnabled', 'true']);
-                appConfigCache.delete(db);
+                const config = await getAppConfig(db);
+                config.reminderChannelId = channelId;
+                config.reminderEnabled = 'true';
+                await saveAppConfig(db, config);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             }
@@ -476,8 +468,9 @@ async function applicationsInteractionCreate(interaction) {
             try {
                 const qKey = interaction.customId.split('_').pop();
                 const newText = interaction.fields.getTextInputValue('new_question_text');
-                await db.query('REPLACE INTO addon_storage (addon_name, `key`, `value`) VALUES (?, ?, ?)', ['applications', qKey, newText]);
-                appConfigCache.delete(db);
+                const config = await getAppConfig(db);
+                config[qKey] = newText;
+                await saveAppConfig(db, config);
                 const updatedConfig = await getAppConfig(db);
                 await interaction.editReply(await generateSetupMessage(updatedConfig, fullContext));
             } catch (error) {
@@ -495,15 +488,13 @@ module.exports = {
     async setupDatabase(db, guildId) {
         try {
             await db.query(`
-                CREATE TABLE IF NOT EXISTS addon_storage (
-                    addon_name VARCHAR(100) NOT NULL,
-                    \`key\` VARCHAR(100) NOT NULL,
-                    \`value\` TEXT,
-                    PRIMARY KEY (addon_name, \`key\`)
+                CREATE TABLE IF NOT EXISTS addon_applications (
+                    id INT PRIMARY KEY DEFAULT 1,
+                    config JSON
                 )
             `);
         } catch (error) {
-            console.error(`[Applications] Failed to verify addon_storage table for guild ${guildId}:`, error);
+            console.error(`[Applications] Failed to verify addon_applications table for guild ${guildId}:`, error);
         }
     },
 
@@ -516,10 +507,10 @@ module.exports = {
             return;
         }
 
-        // Remove old listener if hot-reloading, then attach the new one
-        const existingListener = client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate');
-        if (existingListener) client.off('interactionCreate', existingListener);
-        client.on('interactionCreate', applicationsInteractionCreate);
+        // Ensure we only attach the listener once
+        if (!client.listeners('interactionCreate').find(l => l.name === 'applicationsInteractionCreate')) {
+            client.on('interactionCreate', applicationsInteractionCreate);
+        }
 
         // Setup the background interval for the inactivity reminder (checks every 30 minutes)
         if (!client.__appReminderIntervals) client.__appReminderIntervals = new Map();
